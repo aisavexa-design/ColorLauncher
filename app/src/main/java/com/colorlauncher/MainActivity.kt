@@ -4,25 +4,24 @@ import android.app.Activity
 import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Intent
-import android.graphics.Outline
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
+import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.dynamicanimation.animation.DynamicAnimation
-import androidx.dynamicanimation.animation.SpringAnimation
-import androidx.dynamicanimation.animation.SpringForce
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.util.concurrent.Executors
 
-data class AppItem(val label: String, val intent: Intent, val icon: Drawable)
+class AppItem(val label: String, val intent: Intent, val icon: Bitmap)
 
 class MainActivity : Activity() {
 
@@ -35,7 +34,8 @@ class MainActivity : Activity() {
         recycler = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 4)
             setHasFixedSize(true)
-            setItemViewCacheSize(20)
+            setItemViewCacheSize(24)
+            itemAnimator = null
             clipToPadding = false
             setPadding((8 * d).toInt(), (48 * d).toInt(), (8 * d).toInt(), (32 * d).toInt())
         }
@@ -46,18 +46,26 @@ class MainActivity : Activity() {
     private fun loadApps() {
         bg.execute {
             val pm = packageManager
+            val sizePx = (56 * resources.displayMetrics.density).toInt()
             val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val apps = pm.queryIntentActivities(main, 0).map { ri ->
                 val intent = Intent(Intent.ACTION_MAIN)
                     .addCategory(Intent.CATEGORY_LAUNCHER)
                     .setComponent(ComponentName(ri.activityInfo.packageName, ri.activityInfo.name))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                AppItem(ri.loadLabel(pm).toString(), intent, ri.loadIcon(pm))
+                AppItem(ri.loadLabel(pm).toString(), intent, toBitmap(ri.loadIcon(pm), sizePx))
             }.sortedBy { it.label.lowercase() }
             runOnUiThread {
                 recycler.adapter = AppAdapter(apps) { view, item -> launch(view, item) }
             }
         }
+    }
+
+    private fun toBitmap(dr: Drawable, size: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        dr.setBounds(0, 0, size, size)
+        dr.draw(Canvas(bmp))
+        return bmp
     }
 
     private fun launch(view: View, item: AppItem) {
@@ -80,27 +88,25 @@ class AppAdapter(
     private val onClick: (View, AppItem) -> Unit
 ) : RecyclerView.Adapter<AppAdapter.VH>() {
 
+    init { setHasStableIds(true) }
+
     class VH(val root: LinearLayout, val icon: ImageView, val label: TextView) :
         RecyclerView.ViewHolder(root)
+
+    override fun getItemId(position: Int) = position.toLong()
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
         val ctx = parent.context
         val d = ctx.resources.displayMetrics.density
         val icon = ImageView(ctx).apply {
             layoutParams = LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt())
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(v: View, o: Outline) {
-                    o.setRoundRect(0, 0, v.width, v.height, v.width * 0.28f)
-                }
-            }
-            clipToOutline = true
         }
         val label = TextView(ctx).apply {
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 11f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             maxLines = 1
             gravity = Gravity.CENTER
-            setShadowLayer(4f, 0f, 1f, 0x99000000.toInt())
             setPadding(0, (6 * d).toInt(), 0, 0)
         }
         val root = LinearLayout(ctx).apply {
@@ -118,28 +124,20 @@ class AppAdapter(
 
     override fun onBindViewHolder(h: VH, position: Int) {
         val item = items[position]
-        h.icon.setImageDrawable(item.icon)
+        h.icon.setImageBitmap(item.icon)
         h.label.text = item.label
         h.root.setOnClickListener { onClick(h.icon, item) }
         h.root.setOnTouchListener { v, e ->
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> spring(v, 0.9f)
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> spring(v, 1f)
+                MotionEvent.ACTION_DOWN ->
+                    v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(80).setInterpolator(null).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(220)
+                        .setInterpolator(OvershootInterpolator(2f)).start()
             }
             false
         }
     }
 
     override fun getItemCount() = items.size
-
-    private fun spring(v: View, target: Float) {
-        listOf(DynamicAnimation.SCALE_X, DynamicAnimation.SCALE_Y).forEach { prop ->
-            SpringAnimation(v, prop).apply {
-                spring = SpringForce(target)
-                    .setStiffness(SpringForce.STIFFNESS_MEDIUM)
-                    .setDampingRatio(SpringForce.DAMPING_RATIO_MEDIUM_BOUNCY)
-                start()
-            }
-        }
-    }
 }
