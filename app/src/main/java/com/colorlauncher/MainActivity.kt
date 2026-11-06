@@ -1,5 +1,6 @@
 package com.colorlauncher
 
+import android.annotation.TargetApi
 import android.app.Activity
 import android.app.ActivityOptions
 import android.app.AlertDialog
@@ -9,6 +10,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -25,6 +29,8 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -34,7 +40,7 @@ import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.dynamicanimation.animation.DynamicAnimation
+import androidx.core.widget.doAfterTextChanged
 import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
@@ -42,20 +48,14 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import java.util.concurrent.Executors
 import kotlin.math.abs
-import android.annotation.TargetApi
-import android.graphics.Paint
-import android.graphics.RenderEffect
-import android.graphics.Shader
-import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
-import androidx.core.widget.doAfterTextChanged
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class AppItem(val label: String, val key: String, val intent: Intent, val icon: Bitmap)
+
 class SearchIcon(ctx: Context) : View(ctx) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
@@ -63,13 +63,13 @@ class SearchIcon(ctx: Context) : View(ctx) {
 
     override fun onDraw(canvas: Canvas) {
         val s = minOf(width, height).toFloat()
-        p.strokeWidth = s * 0.08f
+        paint.strokeWidth = s * 0.08f
         val r = s * 0.2f
         val cx = width / 2f - s * 0.06f
         val cy = height / 2f - s * 0.06f
-        canvas.drawCircle(cx, cy, r, p)
+        canvas.drawCircle(cx, cy, r, paint)
         val a = r * 0.7071f
-        canvas.drawLine(cx + a, cy + a, cx + a + s * 0.17f, cy + a + s * 0.17f, p)
+        canvas.drawLine(cx + a, cy + a, cx + a + s * 0.17f, cy + a + s * 0.17f, paint)
     }
 }
 
@@ -156,11 +156,16 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private val bg = Executors.newSingleThreadExecutor()
     private lateinit var root: GestureRoot
+    private lateinit var stage: FrameLayout
     private lateinit var home: LinearLayout
     private lateinit var drawer: FrameLayout
     private lateinit var drawerList: RecyclerView
+    private lateinit var homeGrid: RecyclerView
     private lateinit var dock: RecyclerView
     private lateinit var hint: TextView
+    private lateinit var header: LinearLayout
+    private lateinit var titleView: TextView
+    private lateinit var searchBox: EditText
     private lateinit var homeAdapter: AppAdapter
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
@@ -176,20 +181,12 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var pendingReturn = false
     private var pivX = 0f
     private var pivY = 0f
-        private lateinit var stage: FrameLayout
-    private lateinit var homeGrid: RecyclerView
-    private lateinit var header: LinearLayout
-    private lateinit var title: TextView
-    private lateinit var searchBox: EditText
+
     private var searching = false
     private var depth = 0f
     private var depthAnim: SpringAnimation? = null
     private var lastIconBlur = -1
     private val iconBlurMax by lazy { dp(8) }
-
-    private var blurOk = false
-    private var lastBlur = -1
-    private val blurMax by lazy { dp(32) }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -197,14 +194,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onCreate(savedInstanceState)
         setupWindow()
         enableHighRefresh()
-
-        if (Build.VERSION.SDK_INT >= 31) {
-            blurOk = try {
-                windowManager.isCrossWindowBlurEnabled
-            } catch (e: Exception) {
-                false
-            }
-        }
 
         homeKeys.addAll(loadKeys("home"))
         dockKeys.addAll(loadKeys("dock"))
@@ -235,7 +224,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(32), dp(24), 0)
         }
-                homeGrid = RecyclerView(this).apply {
+        homeGrid = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 4)
             adapter = homeAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
@@ -274,16 +263,15 @@ class MainActivity : Activity(), GestureRoot.Host {
             clipToPadding = true
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
-            setPadding(dp(8), dp(48), dp(8), dp(24))
+            setPadding(dp(8), dp(64), dp(8), dp(24))
         }
+        // drawer background transparent (no blur, no scrim)
         drawer = FrameLayout(this).apply {
-            // blur available: halka dark scrim, warna zyada dark scrim
-            setBackgroundColor(if (blurOk) 0x66000000 else 0xB3000000.toInt())
             addView(drawerList, MATCH, MATCH)
             visibility = View.INVISIBLE
         }
 
-                title = TextView(this).apply {
+        titleView = TextView(this).apply {
             text = "All apps"
             textSize = 26f
             setTextColor(0xFFFFFFFF.toInt())
@@ -306,7 +294,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(20), 0, dp(12), 0)
-            addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+            addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
             addView(searchBox, LinearLayout.LayoutParams(0, WRAP, 1f))
             addView(searchBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
         }
@@ -349,12 +337,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-        private fun applyInsets(top: Int, bottom: Int, ime: Int) {
+    private fun applyInsets(top: Int, bottom: Int, ime: Int) {
         home.setPadding(0, top + dp(24), 0, bottom)
         (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
         header.requestLayout()
         drawerList.setPadding(dp(8), top + dp(64), dp(8), maxOf(bottom, ime) + dp(16))
-        }
+    }
 
     // ---------- 120Hz ----------
     @Suppress("DEPRECATION")
@@ -403,7 +391,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             }.sortedBy { it.label.lowercase() }
             runOnUiThread {
                 allApps = apps
-                drawerAdapter.submit(apps)
+                filterApps(searchBox.text?.toString() ?: "")
                 refreshHome()
             }
         }
@@ -424,6 +412,27 @@ class MainActivity : Activity(), GestureRoot.Host {
         dr.setBounds(0, 0, size, size)
         dr.draw(Canvas(bmp))
         return bmp
+    }
+
+    // ---------- search ----------
+    private fun filterApps(q: String) {
+        drawerAdapter.submit(
+            if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
+        )
+    }
+
+    private fun setSearchMode(on: Boolean) {
+        searching = on
+        titleView.visibility = if (on) View.GONE else View.VISIBLE
+        searchBox.visibility = if (on) View.VISIBLE else View.GONE
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        if (on) {
+            searchBox.requestFocus()
+            imm.showSoftInput(searchBox, 0)
+        } else {
+            searchBox.setText("")
+            imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
+        }
     }
 
     // ---------- long-press menu ----------
@@ -469,7 +478,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     // ---------- launch + return animation ----------
-        private fun launch(view: View, item: AppItem) {
+    private fun launch(view: View, item: AppItem) {
         try {
             val loc = IntArray(2)
             val rl = IntArray(2)
@@ -493,18 +502,9 @@ class MainActivity : Activity(), GestureRoot.Host {
         } catch (e: Exception) {
             // app missing/disabled: ignore instead of crashing
         }
-        }
-
-    override fun onStop() {
-        super.onStop()
-        if (pendingReturn) {
-            anim?.cancel()
-            setProgress(0f)
-            setLayers(false)
-        }
     }
 
-        override fun onResume() {
+    override fun onResume() {
         super.onResume()
         if (pendingReturn) {
             pendingReturn = false
@@ -556,17 +556,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         homeGrid.setRenderEffect(fx)
         dock.setRenderEffect(fx)
         drawerList.setRenderEffect(fx)
-    }
-        al.spring.setStiffness(600f)
-        al.spring.setDampingRatio(1f)
-        sx.addEndListener { _, _, _, _ ->
-            home.pivotX = home.width / 2f
-            home.pivotY = home.height / 2f
-            home.setLayerType(View.LAYER_TYPE_NONE, null)
-        }
-        sx.start()
-        sy.start()
-        al.start()
     }
 
     // ---------- drawer gesture ----------
@@ -626,20 +615,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         if (drawer.visibility != dv) drawer.visibility = dv
         val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
         if (home.visibility != hv) home.visibility = hv
-                if (p < 0.001f && searching) setSearchMode(false)
-
-        // wallpaper blur (Android 12+), progress ke saath badhta hai
-        if (Build.VERSION.SDK_INT >= 31 && blurOk) {
-            val r = (p * blurMax).toInt() / 3 * 3
-            if (r != lastBlur) {
-                lastBlur = r
-                try {
-                    window.setBackgroundBlurRadius(r)
-                } catch (e: Exception) {
-                    blurOk = false
-                }
-            }
-        }
+        if (p < 0.001f && searching) setSearchMode(false)
     }
 
     private fun setLayers(on: Boolean) {
@@ -650,27 +626,10 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (searching) setSearchMode(false)
-        else if (progress > 0.5f) animateProgress(0f, 0f)
-    }
-
-    private fun filterApps(q: String) {
-        drawerAdapter.submit(
-            if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
-        )
-    }
-
-    private fun setSearchMode(on: Boolean) {
-        searching = on
-        title.visibility = if (on) View.GONE else View.VISIBLE
-        searchBox.visibility = if (on) View.VISIBLE else View.GONE
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-        if (on) {
-            searchBox.requestFocus()
-            imm.showSoftInput(searchBox, 0)
-        } else {
-            searchBox.setText("")
-            imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
+        if (searching) {
+            setSearchMode(false)
+        } else if (progress > 0.5f) {
+            animateProgress(0f, 0f)
         }
     }
 
