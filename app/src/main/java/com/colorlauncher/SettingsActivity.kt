@@ -87,7 +87,8 @@ class SliderView(
     private val trackColor: Int,
     private val min: Int,
     private val max: Int,
-    start: Int
+    start: Int,
+    private val step: Int = 1
 ) : View(ctx) {
     var value = start.coerceIn(min, max)
         private set
@@ -105,7 +106,8 @@ class SliderView(
     private fun setFromX(x: Float) {
         val pad = 14 * d
         val f = ((x - pad) / (width - 2 * pad)).coerceIn(0f, 1f)
-        val v = (Math.round((min + f * (max - min)) / 10f) * 10).coerceIn(min, max)
+        val raw = min + f * (max - min)
+        val v = (Math.round(raw / step) * step).coerceIn(min, max)
         if (v != value) {
             value = v
             invalidate()
@@ -225,6 +227,28 @@ class SettingsActivity : Activity() {
             )
         })
 
+        content.addView(sectionTitle("Icon pack"))
+        content.addView(card().apply {
+            addView(packRow())
+        })
+
+        content.addView(sectionTitle("App drawer spacing"))
+        content.addView(card().apply {
+            addView(
+                sliderRow(
+                    "Horizontal gap", 0, 40, prefs.getInt("gap_h", 8), "dp",
+                    "Space between icons left and right"
+                ) { prefs.edit().putInt("gap_h", it).apply() }
+            )
+            addView(divider())
+            addView(
+                sliderRow(
+                    "Vertical gap", 0, 40, prefs.getInt("gap_v", 12), "dp",
+                    "Space between icon rows"
+                ) { prefs.edit().putInt("gap_v", it).apply() }
+            )
+        })
+
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
@@ -297,6 +321,7 @@ class SettingsActivity : Activity() {
 
     private fun sliderRow(
         heading: String, min: Int, max: Int, start: Int, unit: String, hint: String,
+        step: Int = 1,
         onChange: (Int) -> Unit
     ): View {
         val col = LinearLayout(this)
@@ -316,7 +341,7 @@ class SettingsActivity : Activity() {
             setTextColor(pal.text)
         }, LinearLayout.LayoutParams(0, HUG, 1f))
         top.addView(valueText)
-        val s = SliderView(this, pal.accent, pal.off, min, max, start)
+        val s = SliderView(this, pal.accent, pal.off, min, max, start, step)
         s.onChange = {
             valueText.text = "$it $unit"
             onChange(it)
@@ -369,6 +394,47 @@ class SettingsActivity : Activity() {
         }
         paint()
         col.addView(row)
+        return col
+    }
+
+    private fun packRow(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        col.addView(texts("Icon pack", "Tap to apply. Icon packs (Nova, Lawnchair, Action) are detected automatically."))
+        val options = mutableListOf("" to "Default icons")
+        options.addAll(IconPack.installed(this))
+        val labels = mutableListOf<TextView>()
+        fun paint() {
+            val cur = prefs.getString("icon_pack", "") ?: ""
+            labels.forEachIndexed { i, t ->
+                val on = options[i].first == cur
+                t.text = (if (on) "\u25CF  " else "\u25CB  ") + options[i].second
+                t.setTextColor(if (on) pal.accent else pal.text)
+            }
+        }
+        options.forEachIndexed { i, _ ->
+            val t = TextView(this).apply {
+                textSize = 15f
+                setPadding(0, dp(10), 0, dp(4))
+                setOnClickListener {
+                    prefs.edit().putString("icon_pack", options[i].first).apply()
+                    paint()
+                }
+            }
+            labels.add(t)
+            col.addView(t)
+        }
+        if (options.size == 1) {
+            col.addView(TextView(this).apply {
+                text = "No icon pack installed. Install one from Play Store, then reopen this screen."
+                textSize = 13f
+                setTextColor(pal.sub)
+                setPadding(0, dp(8), 0, 0)
+            })
+        }
+        paint()
         return col
     }
 }
