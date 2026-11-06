@@ -448,7 +448,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            // Rubber-band overscroll: edge par khinchne par stretch hota hai
             overScrollMode = View.OVER_SCROLL_ALWAYS
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
@@ -804,16 +803,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     // ---------- widgets ----------
-    override fun onStart() {
-        super.onStart()
-        widgetHost.startListening()
-    }
-
-    override fun onStop() {
-        super.onStop()
-        widgetHost.stopListening()
-    }
-
     private fun pickWidget() {
         val pm = packageManager
         val providers = widgetMgr.installedProviders
