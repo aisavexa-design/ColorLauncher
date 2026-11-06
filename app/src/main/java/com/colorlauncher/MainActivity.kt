@@ -8,10 +8,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
@@ -20,6 +22,7 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
@@ -28,6 +31,9 @@ import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.dynamicanimation.animation.DynamicAnimation
 import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
@@ -41,6 +47,20 @@ private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class AppItem(val label: String, val key: String, val intent: Intent, val icon: Bitmap)
+
+/** RecyclerView jiska top/bottom fade scroll ke saath smoothly badhta hai (masking effect). */
+class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
+    override fun getTopFadingEdgeStrength(): Float {
+        val len = maxOf(1, verticalFadingEdgeLength).toFloat()
+        return (computeVerticalScrollOffset() / len).coerceIn(0f, 1f)
+    }
+
+    override fun getBottomFadingEdgeStrength(): Float {
+        val len = maxOf(1, verticalFadingEdgeLength).toFloat()
+        val rest = computeVerticalScrollRange() - computeVerticalScrollOffset() - computeVerticalScrollExtent()
+        return (rest / len).coerceIn(0f, 1f)
+    }
+}
 
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -132,11 +152,24 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var pivX = 0f
     private var pivY = 0f
 
+    private var blurOk = false
+    private var lastBlur = -1
+    private val blurMax by lazy { dp(32) }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setupWindow()
         enableHighRefresh()
+
+        if (Build.VERSION.SDK_INT >= 31) {
+            blurOk = try {
+                windowManager.isCrossWindowBlurEnabled
+            } catch (e: Exception) {
+                false
+            }
+        }
 
         homeKeys.addAll(loadKeys("home"))
         dockKeys.addAll(loadKeys("dock"))
@@ -188,7 +221,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(40), 0, 0)
             addView(clock, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(date, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(hint, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -198,17 +230,20 @@ class MainActivity : Activity(), GestureRoot.Host {
             })
         }
 
-        drawerList = RecyclerView(this).apply {
+        drawerList = FadeRecycler(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 4)
             adapter = drawerAdapter
             setHasFixedSize(true)
             setItemViewCacheSize(24)
             itemAnimator = null
-            clipToPadding = false
-            setPadding(dp(8), dp(24), dp(8), dp(24))
+            clipToPadding = true
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(dp(56))
+            setPadding(dp(8), dp(48), dp(8), dp(24))
         }
         drawer = FrameLayout(this).apply {
-            setBackgroundColor(0xCC000000.toInt())
+            // blur available: halka dark scrim, warna zyada dark scrim
+            setBackgroundColor(if (blurOk) 0x66000000 else 0xB3000000.toInt())
             addView(drawerList, MATCH, MATCH)
             visibility = View.INVISIBLE
         }
@@ -216,9 +251,40 @@ class MainActivity : Activity(), GestureRoot.Host {
         root = GestureRoot(this, this)
         root.addView(home, MATCH, MATCH)
         root.addView(drawer, MATCH, MATCH)
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            applyInsets(bars.top, bars.bottom)
+            insets
+        }
+
         setContentView(root)
         setProgress(0f)
         loadApps()
+    }
+
+    // ---------- full screen (edge-to-edge) ----------
+    private fun setupWindow() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            val lp = window.attributes
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = lp
+        }
+    }
+
+    private fun applyInsets(top: Int, bottom: Int) {
+        home.setPadding(0, top + dp(24), 0, bottom)
+        drawerList.setPadding(dp(8), top + dp(16), dp(8), bottom + dp(16))
     }
 
     // ---------- 120Hz ----------
@@ -451,6 +517,19 @@ class MainActivity : Activity(), GestureRoot.Host {
         if (drawer.visibility != dv) drawer.visibility = dv
         val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
         if (home.visibility != hv) home.visibility = hv
+
+        // wallpaper blur (Android 12+), progress ke saath badhta hai
+        if (Build.VERSION.SDK_INT >= 31 && blurOk) {
+            val r = (p * blurMax).toInt() / 3 * 3
+            if (r != lastBlur) {
+                lastBlur = r
+                try {
+                    window.setBackgroundBlurRadius(r)
+                } catch (e: Exception) {
+                    blurOk = false
+                }
+            }
+        }
     }
 
     private fun setLayers(on: Boolean) {
