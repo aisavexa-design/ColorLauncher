@@ -205,6 +205,26 @@ class SettingsActivity : Activity() {
             )
         })
 
+        content.addView(sectionTitle("Icons"))
+        content.addView(card().apply {
+            addView(
+                sliderRow(
+                    "Icon size", 40, 80, prefs.getInt("icon_size", 60), "dp",
+                    "Home, dock and app drawer icons"
+                ) { prefs.edit().putInt("icon_size", it).apply() }
+            )
+            addView(divider())
+            addView(shapeRow())
+            addView(divider())
+            addView(
+                switchRow(
+                    "Icon labels",
+                    "Show app names under icons",
+                    prefs.getBoolean("icon_label", true)
+                ) { prefs.edit().putBoolean("icon_label", it).apply() }
+            )
+        })
+
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
@@ -308,6 +328,47 @@ class SettingsActivity : Activity() {
             textSize = 13f
             setTextColor(pal.sub)
         })
+        return col
+    }
+
+    private fun shapeRow(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        col.addView(texts("Icon shape", "Clip style for home, dock and drawer icons"))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        val names = listOf("Squircle", "Circle", "Square")
+        val chips = mutableListOf<TextView>()
+        fun paint() {
+            val sel = prefs.getInt("icon_shape", 0)
+            chips.forEachIndexed { i, c ->
+                c.setTextColor(if (i == sel) Color.WHITE else pal.text)
+                c.background = GradientDrawable().apply {
+                    cornerRadius = dp(16).toFloat()
+                    setColor(if (i == sel) pal.accent else pal.off)
+                }
+            }
+        }
+        names.forEachIndexed { i, n ->
+            val c = TextView(this).apply {
+                text = n
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                setOnClickListener {
+                    prefs.edit().putInt("icon_shape", i).apply()
+                    paint()
+                }
+            }
+            chips.add(c)
+            row.addView(c, LinearLayout.LayoutParams(0, HUG, 1f).apply { marginEnd = dp(8) })
+        }
+        paint()
+        col.addView(row)
         return col
     }
 }
