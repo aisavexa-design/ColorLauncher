@@ -14,8 +14,9 @@ import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Outline
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
@@ -34,7 +35,6 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.Window
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -99,6 +99,36 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
+/** Icon ko shape ke hisaab se clip karta hai (0 squircle, 1 circle, 2 square). */
+class ShapeIcon(ctx: Context) : ImageView(ctx) {
+    var shape = 0
+        set(v) {
+            field = v
+            invalidate()
+        }
+    private val path = Path()
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) {
+            super.onDraw(canvas)
+            return
+        }
+        path.reset()
+        val rect = RectF(0f, 0f, w, h)
+        when (shape) {
+            1 -> path.addOval(rect, Path.Direction.CW)
+            2 -> path.addRoundRect(rect, w * 0.05f, h * 0.05f, Path.Direction.CW)
+            else -> path.addRoundRect(rect, w * 0.3f, h * 0.3f, Path.Direction.CW)
+        }
+        val save = canvas.save()
+        canvas.clipPath(path)
+        super.onDraw(canvas)
+        canvas.restoreToCount(save)
+    }
+}
+
 /** Icon se full screen tak rounded-corner sheet expand hoti hai (sirf open animation). */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -136,7 +166,6 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         )
         sheet.color = color
         sheet.alpha = (minOf(1f, tt * 6f) * 255).toInt()
-        // corners icon ke corner se screen corner tak badhte hain aur end tak rounded rehte hain
         val rad = iconCorner + (screenCorner - iconCorner) * tt
         canvas.drawRoundRect(cur, rad, rad, sheet)
         val bmp = icon ?: return
@@ -146,7 +175,7 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     }
 }
 
-/** RecyclerView jiska top/bottom fade scroll ke saath smoothly badhta hai (masking effect). */
+/** RecyclerView jiska top/bottom fade scroll ke saath smoothly badhta hai. */
 class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     override fun getTopFadingEdgeStrength(): Float {
         val len = maxOf(1, verticalFadingEdgeLength).toFloat()
@@ -244,8 +273,13 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
 
+    private val homeGuide = GridGuide()
     private var allApps: List<AppItem> = emptyList()
     private var appsLoaded = false
+    private var loadedPack = ""
+    private var dragLock = false
+    private var drawerGapH = 8
+    private var drawerGapV = 12
     private val homeKeys = mutableListOf<String>()
     private val dockKeys = mutableListOf<String>()
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
@@ -267,6 +301,44 @@ class MainActivity : Activity(), GestureRoot.Host {
     private val emphasized = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    /** Home grid par drag ke time dashed grid cells dikhata hai. */
+    private inner class GridGuide : RecyclerView.ItemDecoration() {
+        var visible = false
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = 0x66FFFFFF
+            pathEffect = DashPathEffect(floatArrayOf(12f, 10f), 0f)
+        }
+        private val r = RectF()
+
+        override fun onDrawOver(c: Canvas, parent: RecyclerView, state: RecyclerView.State) {
+            if (!visible) return
+            val lm = parent.layoutManager as? GridLayoutManager ?: return
+            val cols = lm.spanCount
+            val child = parent.getChildAt(0) ?: return
+            val rowH = child.height.toFloat()
+            if (rowH <= 0f) return
+            val left = parent.paddingLeft.toFloat()
+            val right = (parent.width - parent.paddingRight).toFloat()
+            val cw = (right - left) / cols
+            val rows = ((parent.height - parent.paddingTop) / rowH).toInt() + 1
+            val inset = dp(4).toFloat()
+            for (row in 0 until rows) {
+                for (col in 0 until cols) {
+                    val top = parent.paddingTop + row * rowH
+                    r.set(
+                        left + col * cw + inset,
+                        top + inset,
+                        left + (col + 1) * cw - inset,
+                        top + rowH - inset
+                    )
+                    c.drawRoundRect(r, dp(16).toFloat(), dp(16).toFloat(), paint)
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -310,6 +382,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             clipToPadding = false
             setPadding(dp(8), dp(16), dp(8), 0)
         }
+        homeGrid.addItemDecoration(homeGuide)
         dock = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 1)
             adapter = dockAdapter
@@ -347,12 +420,16 @@ class MainActivity : Activity(), GestureRoot.Host {
             override fun getItemOffsets(outRect: Rect, view: View, parent: RecyclerView, state: RecyclerView.State) {
                 val n = state.itemCount
                 if (n == 0) return
+                val pos = parent.getChildAdapterPosition(view)
+                if (pos == RecyclerView.NO_POSITION) return
+                val h = dp(drawerGapH) / 2
+                val v = dp(drawerGapV) / 2
+                outRect.set(h, v, h, v)
                 val rem = n % 4
                 val lastRowStart = n - (if (rem == 0) 4 else rem)
-                if (parent.getChildAdapterPosition(view) >= lastRowStart) outRect.bottom = listBottomGap
+                if (pos >= lastRowStart) outRect.bottom += listBottomGap
             }
         })
-        // drawer background transparent (no blur, no scrim)
         drawer = FrameLayout(this).apply {
             addView(drawerList, MATCH, MATCH)
             visibility = View.INVISIBLE
@@ -414,16 +491,14 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         setContentView(root)
         setProgress(0f)
-        dragHelper(homeAdapter, homeKeys).attachToRecyclerView(homeGrid)
-        dragHelper(dockAdapter, dockKeys).attachToRecyclerView(dock)
+        dragHelper(homeAdapter, homeKeys, homeGrid, homeGuide).attachToRecyclerView(homeGrid)
+        dragHelper(dockAdapter, dockKeys, dock, null).attachToRecyclerView(dock)
         try {
             loadApps()
         } catch (e: Exception) {
-            // ignore: list background mein dobara load hogi
         }
     }
 
-    // ---------- full screen (edge-to-edge) ----------
     private fun setupWindow() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
@@ -449,7 +524,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.invalidateItemDecorations()
     }
 
-    // ---------- 120Hz ----------
     @Suppress("DEPRECATION")
     private fun enableHighRefresh() {
         try {
@@ -465,47 +539,69 @@ class MainActivity : Activity(), GestureRoot.Host {
                 window.attributes = lp
             }
         } catch (e: Exception) {
-            // unsupported device: keep default refresh rate
         }
     }
 
-    // ---------- drag and drop (home + dock) ----------
-    private fun dragHelper(adapter: AppAdapter, keys: MutableList<String>) =
-        ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
-            ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
-            ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
-        ) {
-            override fun onMove(
-                rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
-            ): Boolean {
-                val from = vh.bindingAdapterPosition
-                val to = target.bindingAdapterPosition
-                if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
-                adapter.move(from, to)
-                keys.add(to, keys.removeAt(from))
-                return true
-            }
+    /**
+     * Drag and drop. Drag shuru hote hi dragLock on hota hai, taaki drawer ka swipe gesture
+     * touch na chhine. Grid guide dikhti hai aur dragged icon halka ho jata hai.
+     */
+    private fun dragHelper(
+        adapter: AppAdapter,
+        keys: MutableList<String>,
+        rv: RecyclerView,
+        guide: GridGuide?
+    ) = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
+        ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
+        ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
+    ) {
+        override fun onMove(
+            recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
+        ): Boolean {
+            val from = vh.bindingAdapterPosition
+            val to = target.bindingAdapterPosition
+            if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
+            adapter.move(from, to)
+            keys.add(to, keys.removeAt(from))
+            return true
+        }
 
-            override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {
-                val p = vh.bindingAdapterPosition
-                if (p in keys.indices) keys.removeAt(p)
-                save()
-            }
+        override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {
+            val p = vh.bindingAdapterPosition
+            if (p != RecyclerView.NO_POSITION && p in keys.indices) keys.removeAt(p)
+            save()
+        }
 
-            override fun clearView(rv: RecyclerView, vh: RecyclerView.ViewHolder) {
-                super.clearView(rv, vh)
-                save()
+        override fun onSelectedChanged(vh: RecyclerView.ViewHolder?, actionState: Int) {
+            super.onSelectedChanged(vh, actionState)
+            if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                dragLock = true
+                guide?.visible = true
+                vh?.itemView?.alpha = 0.7f
+                rv.invalidate()
             }
-        })
+        }
+
+        override fun clearView(recycler: RecyclerView, vh: RecyclerView.ViewHolder) {
+            super.clearView(recycler, vh)
+            vh.itemView.alpha = 1f
+            dragLock = false
+            guide?.visible = false
+            rv.invalidate()
+            save()
+        }
+    })
 
     private fun applyIconStyle() {
         val s = readIconStyle(this)
         homeAdapter.applyStyle(s)
         dockAdapter.applyStyle(s)
         drawerAdapter.applyStyle(s)
+        drawerGapH = s.gapH
+        drawerGapV = s.gapV
+        drawerList.invalidateItemDecorations()
     }
 
-    // ---------- data ----------
     private fun loadKeys(name: String): List<String> =
         prefs.getString(name, "")!!.split("|").filter { it.isNotEmpty() }
 
@@ -517,25 +613,38 @@ class MainActivity : Activity(), GestureRoot.Host {
         refreshHome()
     }
 
+    private fun currentPack(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
+
     private fun loadApps() {
+        val pack = currentPack()
         bg.execute {
-            val pm = packageManager
-            val sizePx = dp(96)
-            val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val apps = pm.queryIntentActivities(main, 0).map { ri ->
-                val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
-                val intent = Intent(Intent.ACTION_MAIN)
-                    .addCategory(Intent.CATEGORY_LAUNCHER)
-                    .setComponent(cn)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                AppItem(ri.loadLabel(pm).toString(), cn.flattenToString(), intent, toBitmap(ri.loadIcon(pm), sizePx))
-            }.sortedBy { it.label.lowercase() }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                allApps = apps
-                appsLoaded = true
-                filterApps(searchBox.text?.toString() ?: "")
-                refreshHome()
+            try {
+                val pm = packageManager
+                val sizePx = dp(96)
+                val packMap = if (pack.isNotEmpty()) IconPack.map(this, pack) else null
+                val packCtx = if (pack.isNotEmpty()) IconPack.context(this, pack) else null
+                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                val apps = pm.queryIntentActivities(main, 0).map { ri ->
+                    val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+                    val intent = Intent(Intent.ACTION_MAIN)
+                        .addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setComponent(cn)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                    val packDraw = packMap?.get(cn.flattenToString())
+                        ?.let { name -> packCtx?.let { IconPack.drawable(it, name) } }
+                    val src = packDraw ?: ri.loadIcon(pm)
+                    AppItem(ri.loadLabel(pm).toString(), cn.flattenToString(), intent, toBitmap(src, sizePx))
+                }.sortedBy { it.label.lowercase() }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    allApps = apps
+                    appsLoaded = true
+                    loadedPack = pack
+                    filterApps(searchBox.text?.toString() ?: "")
+                    refreshHome()
+                }
+            } catch (e: Exception) {
             }
         }
     }
@@ -561,7 +670,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- search ----------
     private fun filterApps(q: String) {
         drawerAdapter.submit(
             if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
@@ -582,7 +690,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- long-press menu ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
         val actions = mutableListOf<Pair<String, () -> Unit>>()
@@ -690,7 +797,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- app open animation ----------
     private fun launch(view: View, item: AppItem) {
         if (pendingReturn) return
         try {
@@ -739,7 +845,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Wapas aane par koi animation nahi: sab kuch turant normal. */
     private fun resetLaunch() {
         pendingReturn = false
         launchAnim?.cancel()
@@ -785,7 +890,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onResume()
         if (pendingReturn) resetLaunch()
         applyIconStyle()
-        if (!appsLoaded) loadApps()
+        if (!appsLoaded || currentPack() != loadedPack) loadApps()
     }
 
     private fun applyDepth(d: Float) {
@@ -814,11 +919,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.setRenderEffect(fx)
     }
 
-    // ---------- drawer gesture ----------
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
-    override fun canStartDrag(dy: Float): Boolean =
-        if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+    override fun canStartDrag(dy: Float): Boolean {
+        if (dragLock) return false
+        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+    }
 
     override fun onDragStart() {
         anim?.cancel()
@@ -903,14 +1009,16 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 }
 
-data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean)
+data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean, val gapH: Int, val gapV: Int)
 
 fun readIconStyle(ctx: Context): IconStyle {
     val p = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     return IconStyle(
         p.getInt("icon_size", 60),
         p.getInt("icon_shape", 0),
-        p.getBoolean("icon_label", true)
+        p.getBoolean("icon_label", true),
+        p.getInt("gap_h", 8),
+        p.getInt("gap_v", 12)
     )
 }
 
@@ -921,7 +1029,7 @@ class AppAdapter(
 ) : RecyclerView.Adapter<AppAdapter.VH>() {
 
     private var items: MutableList<AppItem> = mutableListOf()
-    private var style = IconStyle(60, 0, true)
+    private var style = IconStyle(60, 0, true, 8, 12)
 
     init { setHasStableIds(true) }
 
@@ -940,7 +1048,7 @@ class AppAdapter(
         notifyItemMoved(from, to)
     }
 
-    class VH(val root: LinearLayout, val icon: ImageView, val label: TextView) :
+    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) :
         RecyclerView.ViewHolder(root)
 
     override fun getItemId(position: Int) = items[position].key.hashCode().toLong()
@@ -948,10 +1056,9 @@ class AppAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
         val ctx = parent.context
         val d = ctx.resources.displayMetrics.density
-        val icon = ImageView(ctx).apply {
+        val icon = ShapeIcon(ctx).apply {
             layoutParams = LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt())
             scaleType = ImageView.ScaleType.FIT_CENTER
-            clipToOutline = true
         }
         val label = TextView(ctx).apply {
             setTextColor(0xFFFFFFFF.toInt())
@@ -982,8 +1089,7 @@ class AppAdapter(
             lp.height = px
             h.icon.layoutParams = lp
         }
-        h.icon.outlineProvider = outlineFor(style.shape)
-        h.icon.invalidateOutline()
+        h.icon.shape = style.shape
         h.icon.setImageBitmap(item.icon)
 
         val showText = showLabel && style.labels
@@ -1012,16 +1118,6 @@ class AppAdapter(
                         .setInterpolator(OvershootInterpolator(2f)).start()
             }
             false
-        }
-    }
-
-    private fun outlineFor(shape: Int) = object : ViewOutlineProvider() {
-        override fun getOutline(v: View, o: Outline) {
-            when (shape) {
-                1 -> o.setOval(0, 0, v.width, v.height)
-                2 -> o.setRoundRect(0, 0, v.width, v.height, v.width * 0.05f)
-                else -> o.setRoundRect(0, 0, v.width, v.height, v.width * 0.3f)
-            }
         }
     }
 
