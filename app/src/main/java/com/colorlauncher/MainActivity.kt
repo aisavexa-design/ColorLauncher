@@ -13,6 +13,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
@@ -22,7 +23,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.graphics.Outline
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -244,6 +244,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var drawerAdapter: AppAdapter
 
     private var allApps: List<AppItem> = emptyList()
+    private var appsLoaded = false
     private val homeKeys = mutableListOf<String>()
     private val dockKeys = mutableListOf<String>()
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
@@ -414,7 +415,11 @@ class MainActivity : Activity(), GestureRoot.Host {
         setProgress(0f)
         dragHelper(homeAdapter, homeKeys).attachToRecyclerView(homeGrid)
         dragHelper(dockAdapter, dockKeys).attachToRecyclerView(dock)
-        loadApps()
+        try {
+            loadApps()
+        } catch (e: Exception) {
+            // ignore: list background mein dobara load hogi
+        }
     }
 
     // ---------- full screen (edge-to-edge) ----------
@@ -525,7 +530,9 @@ class MainActivity : Activity(), GestureRoot.Host {
                 AppItem(ri.loadLabel(pm).toString(), cn.flattenToString(), intent, toBitmap(ri.loadIcon(pm), sizePx))
             }.sortedBy { it.label.lowercase() }
             runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
                 allApps = apps
+                appsLoaded = true
                 filterApps(searchBox.text?.toString() ?: "")
                 refreshHome()
             }
@@ -543,10 +550,14 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun toBitmap(dr: Drawable, size: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        dr.setBounds(0, 0, size, size)
-        dr.draw(Canvas(bmp))
-        return bmp
+        return try {
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            dr.setBounds(0, 0, size, size)
+            dr.draw(Canvas(bmp))
+            bmp
+        } catch (e: Exception) {
+            Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        }
     }
 
     // ---------- search ----------
@@ -749,6 +760,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onResume()
         if (pendingReturn) resetLaunch()
         applyIconStyle()
+        if (!appsLoaded) loadApps()
     }
 
     private fun applyDepth(d: Float) {
