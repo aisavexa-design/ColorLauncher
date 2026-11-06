@@ -95,7 +95,7 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-/** Icon se full screen tak expand hone wali sheet (launch animation). */
+/** Icon se full screen tak rounded-corner sheet expand hoti hai (sirf open animation). */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -104,7 +104,8 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     private val dst = RectF()
     private var color = Color.DKGRAY
     private var icon: Bitmap? = null
-    private var corner = 0f
+    private var iconCorner = 0f
+    private val screenCorner = 36f * resources.displayMetrics.density
     var t = 0f
         set(v) {
             field = v
@@ -115,7 +116,7 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         from.set(l, tp, r, b)
         color = c
         icon = bmp
-        corner = (r - l) * 0.28f
+        iconCorner = (r - l) * 0.28f
         t = 0f
     }
 
@@ -130,17 +131,17 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
             from.bottom + (h - from.bottom) * tt
         )
         sheet.color = color
-        sheet.alpha = (minOf(1f, tt * 5f) * 255).toInt()
-        val rad = corner * (1f - tt)
+        sheet.alpha = (minOf(1f, tt * 6f) * 255).toInt()
+        // corners: icon ke corner se screen ke corner tak badhte hain, bilkul end me flat
+        val base = iconCorner + (screenCorner - iconCorner) * minOf(1f, tt * 1.5f)
+        val flat = ((tt - 0.9f) / 0.1f).coerceIn(0f, 1f)
+        val rad = base * (1f - flat)
         canvas.drawRoundRect(cur, rad, rad, sheet)
+        // icon same size me sheet ke beech me rehta hai (splash jaisa)
         val bmp = icon ?: return
-        val ia = 1f - minOf(1f, tt * 2.5f)
-        if (ia > 0f) {
-            val half = from.width() / 2f * (1f + 0.5f * tt)
-            dst.set(cur.centerX() - half, cur.centerY() - half, cur.centerX() + half, cur.centerY() + half)
-            iconPaint.alpha = (ia * 255).toInt()
-            canvas.drawBitmap(bmp, null, dst, iconPaint)
-        }
+        val half = from.width() / 2f
+        dst.set(cur.centerX() - half, cur.centerY() - half, cur.centerX() + half, cur.centerY() + half)
+        canvas.drawBitmap(bmp, null, dst, iconPaint)
     }
 }
 
@@ -621,7 +622,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- launch + return animation ----------
+    // ---------- app open animation (sirf open, close animation nahi) ----------
     private fun launch(view: View, item: AppItem) {
         if (pendingReturn) return
         try {
@@ -645,39 +646,41 @@ class MainActivity : Activity(), GestureRoot.Host {
             if (custom) {
                 overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
                 overlay.visibility = View.VISIBLE
-                animateLaunch(1f, ms)
-                root.postDelayed({ startApp(item, true, null) }, (ms * 0.5f).toLong())
+                // app tabhi khulega jab animation poora khatam ho jaye
+                animateLaunch(1f, ms) { startApp(item, true, null) }
             } else {
                 startApp(item, false, view)
                 animateLaunch(1f, ms)
             }
-            // safety: agar app nahi khula to wapas normal ho jaye
-            stage.postDelayed({
-                if (pendingReturn && stage.hasWindowFocus()) closeLaunch()
-            }, ms + 3000)
         } catch (e: Exception) {
-            pendingReturn = false
+            resetLaunch()
         }
     }
 
     private fun startApp(item: AppItem, custom: Boolean, src: View?) {
         try {
             val opts = if (custom || src == null)
-                ActivityOptions.makeCustomAnimation(this, android.R.anim.fade_in, 0)
+                ActivityOptions.makeCustomAnimation(this, 0, 0)
             else
                 ActivityOptions.makeScaleUpAnimation(src, 0, 0, src.width, src.height)
             startActivity(item.intent, opts.toBundle())
+            // safety: agar app nahi khula to launcher normal ho jaye
+            stage.postDelayed({
+                if (pendingReturn && stage.hasWindowFocus()) resetLaunch()
+            }, 4000)
         } catch (e: Exception) {
-            closeLaunch()
+            resetLaunch()
         }
     }
 
-    private fun closeLaunch() {
+    /** Wapas aane par koi animation nahi: sab kuch turant normal. */
+    private fun resetLaunch() {
         pendingReturn = false
-        stage.pivotX = pivX
-        stage.pivotY = pivY
-        val ms = getSharedPreferences("settings", MODE_PRIVATE).getInt("anim_ms", 300)
-        animateLaunch(0f, (ms * 0.9f).toLong()) { overlay.visibility = View.GONE }
+        launchAnim?.cancel()
+        applyDepth(0f)
+        overlay.t = 0f
+        overlay.visibility = View.GONE
+        stage.setLayerType(View.LAYER_TYPE_NONE, null)
     }
 
     private fun animateLaunch(to: Float, duration: Long, onEnd: (() -> Unit)? = null) {
@@ -714,7 +717,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     override fun onResume() {
         super.onResume()
-        if (pendingReturn) closeLaunch()
+        if (pendingReturn) resetLaunch()
     }
 
     // depth: zoom + fade + sirf icons par blur
@@ -812,7 +815,9 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (searching) {
+        if (pendingReturn) {
+            resetLaunch()
+        } else if (searching) {
             setSearchMode(false)
         } else if (progress > 0.5f) {
             animateProgress(0f, 0f)
@@ -821,6 +826,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
         if (progress > 0.01f) animateProgress(0f, 0f)
     }
 
