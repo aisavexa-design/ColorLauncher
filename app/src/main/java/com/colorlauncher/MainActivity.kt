@@ -1,5 +1,8 @@
 package com.colorlauncher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.ActivityOptions
 import android.app.AlertDialog
@@ -30,6 +33,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -73,7 +77,7 @@ class SearchIcon(ctx: Context) : View(ctx) {
     }
 }
 
-/** Icon ki jagah se poori screen tak failne wala card (app open animation) */
+/** Icon ki jagah se poori screen tak failne wala rounded card (app open animation) */
 class OpenCard(ctx: Context) : View(ctx) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -83,15 +87,17 @@ class OpenCard(ctx: Context) : View(ctx) {
     private var icon: Bitmap? = null
     private var cardColor = Color.BLACK
     private var fromRadius = 0f
+    private var bigRadius = 0f
     private var iconFrom = 0f
     private var iconTo = 0f
     private var t = 0f
 
-    fun setup(fromRect: RectF, ic: Bitmap, c: Int, radius: Float, iconEnd: Float) {
+    fun setup(fromRect: RectF, ic: Bitmap, c: Int, radius: Float, big: Float, iconEnd: Float) {
         from.set(fromRect)
         icon = ic
         cardColor = c
         fromRadius = radius
+        bigRadius = big
         iconFrom = fromRect.width()
         iconTo = iconEnd
         setT(0f)
@@ -113,16 +119,20 @@ class OpenCard(ctx: Context) : View(ctx) {
             lerp(from.right, w, t),
             lerp(from.bottom, h, t)
         )
-        val radius = lerp(fromRadius, 0f, t)
+        // corners: shuru me icon jaise, beech me bade rounded, bilkul aakhir me hi seedhe
+        val grow = (t / 0.35f).coerceIn(0f, 1f)
+        val settle = ((t - 0.85f) / 0.15f).coerceIn(0f, 1f)
+        val radius = lerp(fromRadius, bigRadius, grow) * (1f - settle)
         fill.color = cardColor
         fill.alpha = (255 * (t * 4f).coerceIn(0f, 1f)).toInt()
         canvas.drawRoundRect(rect, radius, radius, fill)
+
+        // icon poore time dikhta hai (splash jaisa), isliye slow app me bhi wait natural lagta hai
         val ic = icon ?: return
         val size = lerp(iconFrom, iconTo, t)
         val cx = rect.centerX()
         val cy = rect.centerY()
         dst.set(cx - size / 2f, cy - size / 2f, cx + size / 2f, cy + size / 2f)
-        bmpPaint.alpha = (255 * (1f - ((t - 0.35f) / 0.4f).coerceIn(0f, 1f))).toInt()
         canvas.drawBitmap(ic, null, dst, bmpPaint)
     }
 }
@@ -232,7 +242,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var searching = false
 
     // app open animation state
-    private var openAnim: SpringAnimation? = null
+    private var openAnim: ValueAnimator? = null
     private var opening = false
     private var resumed = false
 
@@ -548,25 +558,25 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     // ---------- app open animation: icon ki origin se, close par koi animation nahi ----------
+    // Har app ke liye same timing: pehle card icon se phailta hai (OPEN_MS),
+    // app uske beech (OPEN_START_AT) par launch hota hai, taaki fast aur slow app dono ek jaise lagein.
+    private val OPEN_MS = 300L
+    private val OPEN_START_AT = 0.35f
+
     private fun launch(view: View, item: AppItem) {
+        if (opening) return
         try {
             val loc = IntArray(2)
             val rl = IntArray(2)
             view.getLocationInWindow(loc)
             root.getLocationInWindow(rl)
+            // touch-scale (0.92) ka offset hata kar exact icon ka rect
+            val p = view.parent as? View
+            val w = view.width * (p?.scaleX ?: 1f)
+            val h = view.height * (p?.scaleY ?: 1f)
             val left = (loc[0] - rl[0]).toFloat()
             val top = (loc[1] - rl[1]).toFloat()
-            val rect = RectF(left, top, left + view.width, top + view.height)
-
-            // system ki apni animation band, taaki sirf hamari origin animation dikhe
-            val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
-            startActivity(item.intent, opts.toBundle())
-            playOpen(rect, item)
-
-            // safety: agar app nahi khula to launcher normal ho jaye
-            stage.postDelayed({
-                if (opening && resumed) resetStage()
-            }, 1500)
+            playOpen(RectF(left, top, left + w, top + h), item)
         } catch (e: Exception) {
             resetStage()
             Toast.makeText(this, "Can't open ${item.label}", Toast.LENGTH_SHORT).show()
@@ -585,23 +595,50 @@ class MainActivity : Activity(), GestureRoot.Host {
             (Color.blue(px) * 0.5f).toInt()
         )
 
-        openCard.setup(rect, item.icon, cardColor, dp(14).toFloat(), dp(72).toFloat())
+        openCard.setup(
+            rect, item.icon, cardColor,
+            dp(14).toFloat(), dp(40).toFloat(), dp(72).toFloat()
+        )
         openCard.visibility = View.VISIBLE
 
         stage.pivotX = rect.centerX()
         stage.pivotY = rect.centerY()
         stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
-        val a = SpringAnimation(FloatValueHolder(0f))
-        a.setSpring(SpringForce(1f).setStiffness(260f).setDampingRatio(1f))
-        a.setMinimumVisibleChange(1f / 500f)
-        a.addUpdateListener { _, v, _ ->
-            val t = v.coerceIn(0f, 1f)
+        var started = false
+        fun startApp() {
+            if (started || !opening) return
+            started = true
+            try {
+                // system ki apni animation band, sirf hamari origin animation dikhegi
+                val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
+                startActivity(item.intent, opts.toBundle())
+                // safety: agar app nahi khula to launcher normal ho jaye
+                stage.postDelayed({
+                    if (opening && resumed) resetStage()
+                }, 2000)
+            } catch (e: Exception) {
+                resetStage()
+                Toast.makeText(this, "Can't open ${item.label}", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        val a = ValueAnimator.ofFloat(0f, 1f)
+        a.duration = OPEN_MS
+        a.interpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+        a.addUpdateListener { va ->
+            val t = va.animatedValue as Float
             openCard.setT(t)
             val s = 1f + 0.06f * t
             stage.scaleX = s
             stage.scaleY = s
+            if (va.animatedFraction >= OPEN_START_AT) startApp()
         }
+        a.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                startApp()
+            }
+        })
         openAnim = a
         a.start()
     }
