@@ -1,6 +1,5 @@
 package com.colorlauncher
 
-import android.annotation.TargetApi
 import android.app.Activity
 import android.app.ActivityOptions
 import android.app.AlertDialog
@@ -11,8 +10,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -20,6 +17,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.VelocityTracker
@@ -40,7 +40,7 @@ import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.widget.doAfterTextChanged
+import androidx.dynamicanimation.animation.DynamicAnimation
 import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
@@ -52,7 +52,7 @@ import kotlin.math.abs
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-class AppItem(val label: String, val key: String, val intent: Intent, val icon: Bitmap)
+class AppItem(val label: String, val key: String, val icon: Bitmap, val intent: Intent)
 
 class SearchIcon(ctx: Context) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -69,26 +69,25 @@ class SearchIcon(ctx: Context) : View(ctx) {
         val cy = height / 2f - s * 0.06f
         canvas.drawCircle(cx, cy, r, paint)
         val a = r * 0.7071f
-        canvas.drawLine(cx + a, cy + a, cx + a + s * 0.17f, cy + a + s * 0.17f, paint)
+        canvas.drawLine(cx + a, cy + a, cx + a + s * 0.18f, cy + a + s * 0.18f, paint)
     }
 }
 
-/** RecyclerView jiska top/bottom fade scroll ke saath smoothly badhta hai (masking effect). */
+/** RecyclerView jiska top/bottom fade scroll ke hisaab se aata hai */
 class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     override fun getTopFadingEdgeStrength(): Float {
-        val len = maxOf(1, verticalFadingEdgeLength).toFloat()
-        return (computeVerticalScrollOffset() / len).coerceIn(0f, 1f)
+        val len = maxOf(1, verticalFadingEdgeLength)
+        return (computeVerticalScrollOffset().toFloat() / len).coerceIn(0f, 1f)
     }
 
     override fun getBottomFadingEdgeStrength(): Float {
-        val len = maxOf(1, verticalFadingEdgeLength).toFloat()
+        val len = maxOf(1, verticalFadingEdgeLength)
         val rest = computeVerticalScrollRange() - computeVerticalScrollOffset() - computeVerticalScrollExtent()
-        return (rest / len).coerceIn(0f, 1f)
+        return (rest.toFloat() / len).coerceIn(0f, 1f)
     }
 }
 
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
-
     interface Host {
         fun canStartDrag(dy: Float): Boolean
         fun onDragStart()
@@ -117,15 +116,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 val dy = e.y - downY
                 val dx = e.x - downX
                 if (!dragging) {
-                    if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy)) {
+                    if (abs(dy) > slop && abs(dy) > abs(dx) && host.canStartDrag(dy)) {
                         dragging = true
                         host.onDragStart()
-                        host.onDrag(dy)
                         parent?.requestDisallowInterceptTouchEvent(true)
                     }
-                } else {
-                    host.onDrag(dy)
                 }
+                if (dragging) host.onDrag(dy)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (dragging) {
@@ -153,7 +150,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 }
 
 class MainActivity : Activity(), GestureRoot.Host {
-
     private val bg = Executors.newSingleThreadExecutor()
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -173,20 +169,17 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var allApps: List<AppItem> = emptyList()
     private val homeKeys = mutableListOf<String>()
     private val dockKeys = mutableListOf<String>()
-    private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("launcher", MODE_PRIVATE) }
 
     private var progress = 0f
     private var dragBase = 0f
     private var anim: SpringAnimation? = null
-    private var pendingReturn = false
-    private var pivX = 0f
-    private var pivY = 0f
-
     private var searching = false
-    private var depth = 0f
-    private var depthAnim: SpringAnimation? = null
-    private var lastIconBlur = -1
-    private val iconBlurMax by lazy { dp(8) }
+
+    // app open animation state
+    private val openAnims = ArrayList<SpringAnimation>()
+    private var opening = false
+    private var resumed = false
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -198,27 +191,27 @@ class MainActivity : Activity(), GestureRoot.Host {
         homeKeys.addAll(loadKeys("home"))
         dockKeys.addAll(loadKeys("dock"))
 
-        homeAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it, "home") })
-        dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, { showMenu(it, "dock") })
-        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it, "drawer") })
+        homeAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { i -> showMenu(i, "home") })
+        dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, { i -> showMenu(i, "dock") })
+        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { i -> showMenu(i, "drawer") })
 
         val clock = TextClock(this).apply {
             format12Hour = "h:mm"
-            format24Hour = "H:mm"
-            textSize = 64f
-            setTextColor(0xFFFFFFFF.toInt())
+            format24Hour = "HH:mm"
+            textSize = 56f
+            setTextColor(Color.WHITE)
             typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
         }
         val date = TextClock(this).apply {
-            format12Hour = "EEE, d MMMM"
-            format24Hour = "EEE, d MMMM"
+            format12Hour = "EEE, d MMM"
+            format24Hour = "EEE, d MMM"
             textSize = 15f
-            setTextColor(0xFFFFFFFF.toInt())
-            gravity = Gravity.CENTER_HORIZONTAL
+            setTextColor(0xCCFFFFFF.toInt())
+            gravity = Gravity.CENTER
         }
         hint = TextView(this).apply {
-            text = "Swipe up for apps. Long-press an app to add it here."
+            text = "Swipe up for apps. Long-press an app in the drawer to add it here."
             textSize = 13f
             setTextColor(0xB3FFFFFF.toInt())
             gravity = Gravity.CENTER
@@ -233,7 +226,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setPadding(dp(8), dp(16), dp(8), 0)
         }
         dock = RecyclerView(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 1)
+            layoutManager = GridLayoutManager(this@MainActivity, 4)
             adapter = dockAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
@@ -254,6 +247,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             })
         }
 
+        // drawer: background transparent (no blur, no scrim)
         drawerList = FadeRecycler(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 4)
             adapter = drawerAdapter
@@ -263,29 +257,30 @@ class MainActivity : Activity(), GestureRoot.Host {
             clipToPadding = true
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
-            setPadding(dp(8), dp(64), dp(8), dp(24))
+            setPadding(dp(8), dp(72), dp(8), dp(24))
         }
-        // drawer background transparent (no blur, no scrim)
-        drawer = FrameLayout(this).apply {
-            addView(drawerList, MATCH, MATCH)
-            visibility = View.INVISIBLE
-        }
-
         titleView = TextView(this).apply {
             text = "All apps"
             textSize = 26f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_VERTICAL
         }
         searchBox = EditText(this).apply {
             hint = "Search apps"
-            setHintTextColor(0x99FFFFFF.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0x80FFFFFF.toInt())
+            setTextColor(Color.WHITE)
             textSize = 18f
-            setSingleLine(true)
-            background = null
+            setBackgroundColor(Color.TRANSPARENT)
+            isSingleLine = true
             visibility = View.GONE
-            doAfterTextChanged { filterApps(it?.toString() ?: "") }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    filterApps(s?.toString() ?: "")
+                }
+            })
         }
         val searchBtn = SearchIcon(this).apply {
             setOnClickListener { setSearchMode(!searching) }
@@ -293,12 +288,17 @@ class MainActivity : Activity(), GestureRoot.Host {
         header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), 0, dp(12), 0)
-            addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
-            addView(searchBox, LinearLayout.LayoutParams(0, WRAP, 1f))
-            addView(searchBtn, LinearLayout.LayoutParams(dp(44), dp(44)))
+            setPadding(dp(24), 0, dp(16), 0)
+            addView(titleView, LinearLayout.LayoutParams(0, MATCH, 1f))
+            addView(searchBox, LinearLayout.LayoutParams(0, MATCH, 1f))
+            addView(searchBtn, LinearLayout.LayoutParams(dp(40), dp(40)))
         }
-        drawer.addView(header, FrameLayout.LayoutParams(MATCH, dp(56), Gravity.TOP))
+        drawer = FrameLayout(this).apply {
+            visibility = View.INVISIBLE
+            alpha = 0f
+        }
+        drawer.addView(drawerList, MATCH, MATCH)
+        drawer.addView(header, FrameLayout.LayoutParams(MATCH, dp(56)).apply { topMargin = dp(32) })
 
         stage = FrameLayout(this)
         stage.addView(home, MATCH, MATCH)
@@ -314,13 +314,15 @@ class MainActivity : Activity(), GestureRoot.Host {
             applyInsets(bars.top, bars.bottom, ime.bottom)
             insets
         }
-
         setContentView(root)
-        setProgress(0f)
+        WindowCompat.getInsetsController(window, root)?.apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+        root.post { setProgress(progress) }
         loadApps()
     }
 
-    // ---------- full screen (edge-to-edge) ----------
     private fun setupWindow() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
@@ -338,13 +340,12 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun applyInsets(top: Int, bottom: Int, ime: Int) {
-        home.setPadding(0, top + dp(24), 0, bottom)
-        (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
+        home.setPadding(0, top + dp(24), 0, bottom + dp(8))
+        (header.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
         header.requestLayout()
-        drawerList.setPadding(dp(8), top + dp(64), dp(8), maxOf(bottom, ime) + dp(16))
+        drawerList.setPadding(dp(8), top + dp(72), dp(8), maxOf(bottom, ime) + dp(24))
     }
 
-    // ---------- 120Hz ----------
     @Suppress("DEPRECATION")
     private fun enableHighRefresh() {
         try {
@@ -364,7 +365,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- data ----------
     private fun loadKeys(name: String): List<String> =
         prefs.getString(name, "")!!.split("|").filter { it.isNotEmpty() }
 
@@ -373,25 +373,32 @@ class MainActivity : Activity(), GestureRoot.Host {
             .putString("home", homeKeys.joinToString("|"))
             .putString("dock", dockKeys.joinToString("|"))
             .apply()
-        refreshHome()
     }
 
     private fun loadApps() {
+        val sizePx = dp(56)
         bg.execute {
             val pm = packageManager
-            val sizePx = dp(56)
             val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val apps = pm.queryIntentActivities(main, 0).map { ri ->
-                val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
-                val intent = Intent(Intent.ACTION_MAIN)
-                    .addCategory(Intent.CATEGORY_LAUNCHER)
-                    .setComponent(cn)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                AppItem(ri.loadLabel(pm).toString(), cn.flattenToString(), intent, toBitmap(ri.loadIcon(pm), sizePx))
-            }.sortedBy { it.label.lowercase() }
+            val apps = pm.queryIntentActivities(main, 0)
+                .filter { it.activityInfo.packageName != packageName }
+                .map { ri ->
+                    val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+                    val intent = Intent(Intent.ACTION_MAIN)
+                        .addCategory(Intent.CATEGORY_LAUNCHER)
+                        .setComponent(cn)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                    AppItem(
+                        ri.loadLabel(pm).toString(),
+                        cn.flattenToString(),
+                        toBitmap(ri.loadIcon(pm), sizePx),
+                        intent
+                    )
+                }
+                .sortedBy { it.label.lowercase() }
             runOnUiThread {
                 allApps = apps
-                filterApps(searchBox.text?.toString() ?: "")
+                drawerAdapter.submit(apps)
                 refreshHome()
             }
         }
@@ -404,7 +411,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         dockAdapter.submit(dockItems)
         (dock.layoutManager as GridLayoutManager).spanCount = maxOf(1, dockItems.size)
         dock.visibility = if (dockItems.isEmpty()) View.GONE else View.VISIBLE
-        hint.visibility = if (homeKeys.isEmpty() && dockKeys.isEmpty()) View.VISIBLE else View.GONE
+        hint.visibility = if (homeKeys.isEmpty() && dockItems.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun toBitmap(dr: Drawable, size: Int): Bitmap {
@@ -425,7 +432,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         searching = on
         titleView.visibility = if (on) View.GONE else View.VISIBLE
         searchBox.visibility = if (on) View.VISIBLE else View.GONE
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (on) {
             searchBox.requestFocus()
             imm.showSoftInput(searchBox, 0)
@@ -446,11 +453,12 @@ class MainActivity : Activity(), GestureRoot.Host {
             .setTitle(item.label)
             .setItems(options) { _, which ->
                 when (options[which]) {
-                    "Add to Home" -> addTo(homeKeys, item.key, Int.MAX_VALUE, "Home")
+                    "Add to Home" -> addTo(homeKeys, item.key, 20, "Home")
                     "Add to Dock" -> addTo(dockKeys, item.key, 4, "Dock")
                     "Remove" -> {
                         if (where == "home") homeKeys.remove(item.key) else dockKeys.remove(item.key)
                         save()
+                        refreshHome()
                     }
                     "App info" -> try {
                         startActivity(
@@ -474,95 +482,95 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         list.add(key)
         save()
+        refreshHome()
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- launch + return animation ----------
+    // ---------- app open animation (no blur, no close animation) ----------
     private fun launch(view: View, item: AppItem) {
         try {
             val loc = IntArray(2)
-            val rl = IntArray(2)
+            val sl = IntArray(2)
             view.getLocationInWindow(loc)
-            root.getLocationInWindow(rl)
-            pivX = loc[0] - rl[0] + view.width / 2f
-            pivY = loc[1] - rl[1] + view.height / 2f
-            stage.pivotX = pivX
-            stage.pivotY = pivY
+            stage.getLocationInWindow(sl)
+            val px = (loc[0] - sl[0]) + view.width / 2f
+            val py = (loc[1] - sl[1]) + view.height / 2f
             val opts = ActivityOptions.makeScaleUpAnimation(view, 0, 0, view.width, view.height)
             startActivity(item.intent, opts.toBundle())
-            pendingReturn = true
-            animateDepth(1f, 260f, 1f)
-            // safety: agar app nahi khula to blur me atka na rahe
+            playOpen(px, py)
+            // safety: agar app nahi khula to launcher normal ho jaye
             stage.postDelayed({
-                if (pendingReturn && stage.hasWindowFocus()) {
-                    pendingReturn = false
-                    animateDepth(0f, 300f, 0.9f)
-                }
-            }, 3000)
+                if (opening && resumed) resetStage()
+            }, 1500)
         } catch (e: Exception) {
-            // app missing/disabled: ignore instead of crashing
+            resetStage()
+            Toast.makeText(this, "Can't open ${item.label}", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun playOpen(px: Float, py: Float) {
+        openAnims.forEach { it.cancel() }
+        openAnims.clear()
+        opening = true
+        stage.pivotX = px
+        stage.pivotY = py
+        stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+
+        val sx = SpringAnimation(stage, DynamicAnimation.SCALE_X, 1.15f)
+        val sy = SpringAnimation(stage, DynamicAnimation.SCALE_Y, 1.15f)
+        val al = SpringAnimation(stage, DynamicAnimation.ALPHA, 0f)
+        for (a in listOf(sx, sy)) {
+            a.spring.setStiffness(240f)
+            a.spring.setDampingRatio(1f)
+            a.setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE)
+        }
+        al.spring.setStiffness(420f)
+        al.spring.setDampingRatio(1f)
+        al.setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_ALPHA)
+        openAnims.add(sx)
+        openAnims.add(sy)
+        openAnims.add(al)
+        sx.start()
+        sy.start()
+        al.start()
+    }
+
+    /** Bina kisi animation ke turant normal state */
+    private fun resetStage() {
+        opening = false
+        openAnims.forEach { it.cancel() }
+        openAnims.clear()
+        stage.scaleX = 1f
+        stage.scaleY = 1f
+        stage.alpha = 1f
+        stage.pivotX = stage.width / 2f
+        stage.pivotY = stage.height / 2f
+        stage.setLayerType(View.LAYER_TYPE_NONE, null)
     }
 
     override fun onResume() {
         super.onResume()
-        if (pendingReturn) {
-            pendingReturn = false
-            stage.pivotX = pivX
-            stage.pivotY = pivY
-            animateDepth(0f, 300f, 0.85f)
-        }
+        resumed = true
+        if (opening) resetStage()
     }
 
-    // depth: zoom + fade + sirf icons par blur
-    private fun animateDepth(target: Float, stiffness: Float, damping: Float) {
-        depthAnim?.cancel()
-        stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        val a = SpringAnimation(FloatValueHolder(depth))
-        a.spring = SpringForce(target).setStiffness(stiffness).setDampingRatio(damping)
-        a.setMinimumVisibleChange(1f / 256f)
-        a.addUpdateListener { _, v, _ -> applyDepth(v) }
-        a.addEndListener { _, canceled, _, _ ->
-            if (!canceled) {
-                applyDepth(target)
-                stage.setLayerType(View.LAYER_TYPE_NONE, null)
-            }
-        }
-        depthAnim = a
-        a.start()
+    override fun onPause() {
+        super.onPause()
+        resumed = false
     }
 
-    private fun applyDepth(d: Float) {
-        depth = d
-        val s = 1f + 0.10f * d
-        stage.scaleX = s
-        stage.scaleY = s
-        stage.alpha = (1f - 0.5f * d).coerceIn(0f, 1f)
-        if (Build.VERSION.SDK_INT >= 31) {
-            val step = (d.coerceIn(0f, 1f) * 8f + 0.5f).toInt()
-            if (step != lastIconBlur) {
-                lastIconBlur = step
-                setIconBlur(step)
-            }
-        }
-    }
-
-    @TargetApi(31)
-    private fun setIconBlur(step: Int) {
-        val fx = if (step == 0) null else {
-            val r = iconBlurMax * step / 8f
-            RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
-        }
-        homeGrid.setRenderEffect(fx)
-        dock.setRenderEffect(fx)
-        drawerList.setRenderEffect(fx)
+    override fun onStop() {
+        super.onStop()
+        if (opening) resetStage()
     }
 
     // ---------- drawer gesture ----------
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
-    override fun canStartDrag(dy: Float): Boolean =
-        if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+    override fun canStartDrag(dy: Float): Boolean {
+        if (searching) return false
+        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+    }
 
     override fun onDragStart() {
         anim?.cancel()
@@ -588,10 +596,10 @@ class MainActivity : Activity(), GestureRoot.Host {
         anim?.cancel()
         setLayers(true)
         val a = SpringAnimation(FloatValueHolder(progress))
-        a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
+        a.setSpring(SpringForce(target).setStiffness(380f).setDampingRatio(0.9f))
         a.setStartVelocity(velocity)
         a.setMinimumVisibleChange(1f / 256f)
-        a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
+        a.addUpdateListener { _, v, _ -> setProgress(v.coerceIn(0f, 1f)) }
         a.addEndListener { _, canceled, _, _ ->
             if (!canceled) {
                 setProgress(target)
@@ -613,7 +621,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         home.scaleY = s
         val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
         if (drawer.visibility != dv) drawer.visibility = dv
-        val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+        val hv = if (p < 0.999f) View.VISIBLE else View.INVISIBLE
         if (home.visibility != hv) home.visibility = hv
         if (p < 0.001f && searching) setSearchMode(false)
     }
@@ -626,15 +634,13 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (searching) {
-            setSearchMode(false)
-        } else if (progress > 0.5f) {
-            animateProgress(0f, 0f)
-        }
+        if (searching) setSearchMode(false)
+        else if (progress > 0.5f) animateProgress(0f, 0f)
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        if (searching) setSearchMode(false)
         if (progress > 0.01f) animateProgress(0f, 0f)
     }
 
@@ -652,7 +658,9 @@ class AppAdapter(
 
     private var items: List<AppItem> = emptyList()
 
-    init { setHasStableIds(true) }
+    init {
+        setHasStableIds(true)
+    }
 
     fun submit(list: List<AppItem>) {
         items = list
@@ -675,15 +683,16 @@ class AppAdapter(
             textSize = 11f
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
             setPadding(0, (6 * d).toInt(), 0, 0)
             visibility = if (showLabel) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         }
-        val vPad = if (showLabel) 12 else 8
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, (vPad * d).toInt(), 0, (vPad * d).toInt())
+            setPadding(0, (12 * d).toInt(), 0, (12 * d).toInt())
             layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
             addView(icon)
             addView(label)
@@ -703,11 +712,11 @@ class AppAdapter(
         h.root.setOnTouchListener { v, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN ->
-                    v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(80)
+                    v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(90)
                         .setInterpolator(DecelerateInterpolator()).start()
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                     v.animate().scaleX(1f).scaleY(1f).setDuration(220)
-                        .setInterpolator(OvershootInterpolator(2f)).start()
+                        .setInterpolator(OvershootInterpolator()).start()
             }
             false
         }
