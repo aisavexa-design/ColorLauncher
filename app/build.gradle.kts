@@ -15,9 +15,10 @@ android {
         versionName = "0.1"
     }
     buildTypes {
-        release {
+                release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
