@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -40,7 +41,6 @@ import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.dynamicanimation.animation.DynamicAnimation
 import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
@@ -70,6 +70,60 @@ class SearchIcon(ctx: Context) : View(ctx) {
         canvas.drawCircle(cx, cy, r, paint)
         val a = r * 0.7071f
         canvas.drawLine(cx + a, cy + a, cx + a + s * 0.18f, cy + a + s * 0.18f, paint)
+    }
+}
+
+/** Icon ki jagah se poori screen tak failne wala card (app open animation) */
+class OpenCard(ctx: Context) : View(ctx) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val from = RectF()
+    private val rect = RectF()
+    private val dst = RectF()
+    private var icon: Bitmap? = null
+    private var cardColor = Color.BLACK
+    private var fromRadius = 0f
+    private var iconFrom = 0f
+    private var iconTo = 0f
+    private var t = 0f
+
+    fun setup(fromRect: RectF, ic: Bitmap, c: Int, radius: Float, iconEnd: Float) {
+        from.set(fromRect)
+        icon = ic
+        cardColor = c
+        fromRadius = radius
+        iconFrom = fromRect.width()
+        iconTo = iconEnd
+        setT(0f)
+    }
+
+    fun setT(v: Float) {
+        t = v
+        invalidate()
+    }
+
+    private fun lerp(a: Float, b: Float, x: Float) = a + (b - a) * x
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        rect.set(
+            lerp(from.left, 0f, t),
+            lerp(from.top, 0f, t),
+            lerp(from.right, w, t),
+            lerp(from.bottom, h, t)
+        )
+        val radius = lerp(fromRadius, 0f, t)
+        fill.color = cardColor
+        fill.alpha = (255 * (t * 4f).coerceIn(0f, 1f)).toInt()
+        canvas.drawRoundRect(rect, radius, radius, fill)
+        val ic = icon ?: return
+        val size = lerp(iconFrom, iconTo, t)
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        dst.set(cx - size / 2f, cy - size / 2f, cx + size / 2f, cy + size / 2f)
+        bmpPaint.alpha = (255 * (1f - ((t - 0.35f) / 0.4f).coerceIn(0f, 1f))).toInt()
+        canvas.drawBitmap(ic, null, dst, bmpPaint)
     }
 }
 
@@ -153,6 +207,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private val bg = Executors.newSingleThreadExecutor()
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
+    private lateinit var openCard: OpenCard
     private lateinit var home: LinearLayout
     private lateinit var drawer: FrameLayout
     private lateinit var drawerList: RecyclerView
@@ -177,7 +232,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var searching = false
 
     // app open animation state
-    private val openAnims = ArrayList<SpringAnimation>()
+    private var openAnim: SpringAnimation? = null
     private var opening = false
     private var resumed = false
 
@@ -303,8 +358,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         stage = FrameLayout(this)
         stage.addView(home, MATCH, MATCH)
         stage.addView(drawer, MATCH, MATCH)
+
+        openCard = OpenCard(this).apply { visibility = View.GONE }
+
         root = GestureRoot(this, this)
         root.addView(stage, MATCH, MATCH)
+        root.addView(openCard, MATCH, MATCH)
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(
@@ -325,17 +384,19 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun setupWindow() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
-        if (Build.VERSION.SDK_INT >= 29) {
-            window.isNavigationBarContrastEnforced = false
-            window.isStatusBarContrastEnforced = false
-        }
         if (Build.VERSION.SDK_INT >= 28) {
+            window.navigationBarDividerColor = Color.TRANSPARENT
             val lp = window.attributes
             lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             window.attributes = lp
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
         }
     }
 
@@ -486,18 +547,22 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- app open animation (no blur, no close animation) ----------
+    // ---------- app open animation: icon ki origin se, close par koi animation nahi ----------
     private fun launch(view: View, item: AppItem) {
         try {
             val loc = IntArray(2)
-            val sl = IntArray(2)
+            val rl = IntArray(2)
             view.getLocationInWindow(loc)
-            stage.getLocationInWindow(sl)
-            val px = (loc[0] - sl[0]) + view.width / 2f
-            val py = (loc[1] - sl[1]) + view.height / 2f
-            val opts = ActivityOptions.makeScaleUpAnimation(view, 0, 0, view.width, view.height)
+            root.getLocationInWindow(rl)
+            val left = (loc[0] - rl[0]).toFloat()
+            val top = (loc[1] - rl[1]).toFloat()
+            val rect = RectF(left, top, left + view.width, top + view.height)
+
+            // system ki apni animation band, taaki sirf hamari origin animation dikhe
+            val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
-            playOpen(px, py)
+            playOpen(rect, item)
+
             // safety: agar app nahi khula to launcher normal ho jaye
             stage.postDelayed({
                 if (opening && resumed) resetStage()
@@ -508,38 +573,46 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    private fun playOpen(px: Float, py: Float) {
-        openAnims.forEach { it.cancel() }
-        openAnims.clear()
+    private fun playOpen(rect: RectF, item: AppItem) {
+        openAnim?.cancel()
         opening = true
-        stage.pivotX = px
-        stage.pivotY = py
+
+        // card ka color: icon ka average color, thoda dark
+        val px = Bitmap.createScaledBitmap(item.icon, 1, 1, true).getPixel(0, 0)
+        val cardColor = Color.rgb(
+            (Color.red(px) * 0.5f).toInt(),
+            (Color.green(px) * 0.5f).toInt(),
+            (Color.blue(px) * 0.5f).toInt()
+        )
+
+        openCard.setup(rect, item.icon, cardColor, dp(14).toFloat(), dp(72).toFloat())
+        openCard.visibility = View.VISIBLE
+
+        stage.pivotX = rect.centerX()
+        stage.pivotY = rect.centerY()
         stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
-        val sx = SpringAnimation(stage, DynamicAnimation.SCALE_X, 1.15f)
-        val sy = SpringAnimation(stage, DynamicAnimation.SCALE_Y, 1.15f)
-        val al = SpringAnimation(stage, DynamicAnimation.ALPHA, 0f)
-        for (a in listOf(sx, sy)) {
-            a.spring.setStiffness(240f)
-            a.spring.setDampingRatio(1f)
-            a.setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_SCALE)
+        val a = SpringAnimation(FloatValueHolder(0f))
+        a.setSpring(SpringForce(1f).setStiffness(260f).setDampingRatio(1f))
+        a.setMinimumVisibleChange(1f / 500f)
+        a.addUpdateListener { _, v, _ ->
+            val t = v.coerceIn(0f, 1f)
+            openCard.setT(t)
+            val s = 1f + 0.06f * t
+            stage.scaleX = s
+            stage.scaleY = s
         }
-        al.spring.setStiffness(420f)
-        al.spring.setDampingRatio(1f)
-        al.setMinimumVisibleChange(DynamicAnimation.MIN_VISIBLE_CHANGE_ALPHA)
-        openAnims.add(sx)
-        openAnims.add(sy)
-        openAnims.add(al)
-        sx.start()
-        sy.start()
-        al.start()
+        openAnim = a
+        a.start()
     }
 
     /** Bina kisi animation ke turant normal state */
     private fun resetStage() {
         opening = false
-        openAnims.forEach { it.cancel() }
-        openAnims.clear()
+        openAnim?.cancel()
+        openAnim = null
+        openCard.visibility = View.GONE
+        openCard.setT(0f)
         stage.scaleX = 1f
         stage.scaleY = 1f
         stage.alpha = 1f
@@ -568,7 +641,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
     override fun canStartDrag(dy: Float): Boolean {
-        if (searching) return false
+        if (searching || opening) return false
         return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
     }
 
@@ -640,6 +713,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        if (opening) resetStage()
         if (searching) setSearchMode(false)
         if (progress > 0.01f) animateProgress(0f, 0f)
     }
