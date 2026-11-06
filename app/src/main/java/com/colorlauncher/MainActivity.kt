@@ -7,14 +7,20 @@ import android.annotation.TargetApi
 import android.app.Activity
 import android.app.ActivityOptions
 import android.app.Dialog
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetHostView
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -35,6 +41,7 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.Window
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -45,6 +52,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
@@ -58,8 +66,11 @@ import androidx.dynamicanimation.animation.SpringForce
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
+import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.max
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -256,11 +267,20 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
 class MainActivity : Activity(), GestureRoot.Host {
 
+    companion object {
+        private const val HOST_ID = 1024
+        private const val REQ_BIND = 11
+        private const val REQ_CONFIG = 12
+    }
+
     private val bg = Executors.newSingleThreadExecutor()
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
     private lateinit var overlay: LaunchOverlay
     private lateinit var home: LinearLayout
+    private lateinit var clock: TextClock
+    private lateinit var date: TextClock
+    private lateinit var widgetBox: LinearLayout
     private lateinit var drawer: FrameLayout
     private lateinit var drawerList: RecyclerView
     private lateinit var homeGrid: RecyclerView
@@ -274,6 +294,10 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var drawerAdapter: AppAdapter
 
     private val homeGuide = GridGuide()
+    private val widgetHost by lazy { AppWidgetHost(this, HOST_ID) }
+    private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
+    private var pendingWidgetId = -1
+
     private var allApps: List<AppItem> = emptyList()
     private var appsLoaded = false
     private var loadedPack = ""
@@ -352,7 +376,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
         drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it, "drawer") })
 
-        val clock = TextClock(this).apply {
+        clock = TextClock(this).apply {
             format12Hour = "h:mm"
             format24Hour = "H:mm"
             textSize = 64f
@@ -360,12 +384,15 @@ class MainActivity : Activity(), GestureRoot.Host {
             typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        val date = TextClock(this).apply {
+        date = TextClock(this).apply {
             format12Hour = "EEE, d MMMM"
             format24Hour = "EEE, d MMMM"
             textSize = 15f
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER_HORIZONTAL
+        }
+        widgetBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
         hint = TextView(this).apply {
             text = "Swipe up for apps. Long-press an app to add it here."
@@ -381,6 +408,10 @@ class MainActivity : Activity(), GestureRoot.Host {
             itemAnimator = null
             clipToPadding = false
             setPadding(dp(8), dp(16), dp(8), 0)
+            setOnLongClickListener {
+                showHomeMenu()
+                true
+            }
         }
         homeGrid.addItemDecoration(homeGuide)
         dock = RecyclerView(this).apply {
@@ -396,8 +427,13 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setOnLongClickListener {
+                showHomeMenu()
+                true
+            }
             addView(clock, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(date, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(widgetBox, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(hint, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(homeGrid, LinearLayout.LayoutParams(MATCH, 0, 1f))
             addView(dock, LinearLayout.LayoutParams(MATCH, WRAP).apply {
@@ -491,12 +527,14 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         setContentView(root)
         setProgress(0f)
+        applyClock()
         dragHelper(homeAdapter, homeKeys, homeGrid, homeGuide).attachToRecyclerView(homeGrid)
         dragHelper(dockAdapter, dockKeys, dock, null).attachToRecyclerView(dock)
-        try {
-            loadApps()
-        } catch (e: Exception) {
-        }
+        restoreWidgets()
+
+        // Pehle cache se icons turant dikhao, phir background mein update karo
+        showCachedApps()
+        loadApps()
     }
 
     private fun setupWindow() {
@@ -542,9 +580,10 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    // ---------- drag and drop ----------
     /**
-     * Drag and drop. Drag shuru hote hi dragLock on hota hai, taaki drawer ka swipe gesture
-     * touch na chhine. Grid guide dikhti hai aur dragged icon halka ho jata hai.
+     * Drag ab app ki key se order badalta hai, adapter position se nahi. Isse
+     * drop ke baad icon wahin rehta hai jahan chhoda gaya tha.
      */
     private fun dragHelper(
         adapter: AppAdapter,
@@ -558,17 +597,24 @@ class MainActivity : Activity(), GestureRoot.Host {
         override fun onMove(
             recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
         ): Boolean {
-            val from = vh.bindingAdapterPosition
-            val to = target.bindingAdapterPosition
-            if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
-            adapter.move(from, to)
-            keys.add(to, keys.removeAt(from))
+            val fromPos = vh.bindingAdapterPosition
+            val toPos = target.bindingAdapterPosition
+            if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
+            val fromKey = adapter.keyAt(fromPos) ?: return false
+            val toKey = adapter.keyAt(toPos) ?: return false
+            adapter.move(fromPos, toPos)
+            val fromIdx = keys.indexOf(fromKey)
+            val toIdx = keys.indexOf(toKey)
+            if (fromIdx >= 0 && toIdx >= 0) {
+                keys.removeAt(fromIdx)
+                keys.add(toIdx, fromKey)
+            }
             return true
         }
 
         override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {
-            val p = vh.bindingAdapterPosition
-            if (p != RecyclerView.NO_POSITION && p in keys.indices) keys.removeAt(p)
+            val key = adapter.keyAt(vh.bindingAdapterPosition) ?: return
+            keys.remove(key)
             save()
         }
 
@@ -602,19 +648,71 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.invalidateItemDecorations()
     }
 
+    private fun applyClock() {
+        val on = prefs.getBoolean("clock", true)
+        clock.visibility = if (on) View.VISIBLE else View.GONE
+        date.visibility = if (on) View.VISIBLE else View.GONE
+    }
+
     private fun loadKeys(name: String): List<String> =
         prefs.getString(name, "")!!.split("|").filter { it.isNotEmpty() }
 
-    private fun save() {
+    private fun persist() {
         prefs.edit()
             .putString("home", homeKeys.joinToString("|"))
             .putString("dock", dockKeys.joinToString("|"))
             .apply()
+    }
+
+    private fun save() {
+        persist()
         refreshHome()
     }
 
     private fun currentPack(): String =
         getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
+
+    private fun makeIntent(cn: ComponentName): Intent =
+        Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setComponent(cn)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+
+    // ---------- icon cache (disk) ----------
+    private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
+
+    private fun cacheFile(key: String): File = File(cacheDir(), key.hashCode().toString() + ".png")
+
+    private fun showCachedApps() {
+        val c = getSharedPreferences("app_cache", MODE_PRIVATE)
+        if (c.getString("pack", "") != currentPack()) return
+        val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
+        val list = lines.mapNotNull { line ->
+            val parts = line.split("\t")
+            if (parts.size < 2) return@mapNotNull null
+            val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
+            val bmp = BitmapFactory.decodeFile(cacheFile(parts[0]).path) ?: return@mapNotNull null
+            AppItem(parts[1], parts[0], makeIntent(cn), bmp)
+        }
+        if (list.isEmpty()) return
+        allApps = list
+        refreshHome()
+        filterApps("")
+    }
+
+    private fun saveCache(apps: List<AppItem>, pack: String) {
+        try {
+            for (a in apps) {
+                val f = cacheFile(a.key)
+                FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            }
+            getSharedPreferences("app_cache", MODE_PRIVATE).edit()
+                .putString("pack", pack)
+                .putString("list", apps.joinToString("\n") { it.key + "\t" + it.label })
+                .apply()
+        } catch (e: Exception) {
+        }
+    }
 
     private fun loadApps() {
         val pack = currentPack()
@@ -627,15 +725,17 @@ class MainActivity : Activity(), GestureRoot.Host {
                 val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
                 val apps = pm.queryIntentActivities(main, 0).map { ri ->
                     val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
-                    val intent = Intent(Intent.ACTION_MAIN)
-                        .addCategory(Intent.CATEGORY_LAUNCHER)
-                        .setComponent(cn)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                     val packDraw = packMap?.get(cn.flattenToString())
                         ?.let { name -> packCtx?.let { IconPack.drawable(it, name) } }
                     val src = packDraw ?: ri.loadIcon(pm)
-                    AppItem(ri.loadLabel(pm).toString(), cn.flattenToString(), intent, toBitmap(src, sizePx))
+                    AppItem(
+                        ri.loadLabel(pm).toString(),
+                        cn.flattenToString(),
+                        makeIntent(cn),
+                        toBitmap(src, sizePx)
+                    )
                 }.sortedBy { it.label.lowercase() }
+                saveCache(apps, pack)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     allApps = apps
@@ -690,17 +790,149 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    // ---------- home screen menu (khali jagah long-press) ----------
+    private fun showHomeMenu() {
+        val clockOn = prefs.getBoolean("clock", true)
+        val actions = listOf<Pair<String, () -> Unit>>(
+            "Add widget" to { pickWidget() },
+            (if (clockOn) "Hide clock" else "Show clock") to {
+                prefs.edit().putBoolean("clock", !clockOn).apply()
+                applyClock()
+            },
+            "Launcher settings" to { startActivity(Intent(this, SettingsActivity::class.java)) }
+        )
+        showSheet("Home screen", null, actions)
+    }
+
+    // ---------- widgets ----------
+    override fun onStart() {
+        super.onStart()
+        widgetHost.startListening()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        widgetHost.stopListening()
+    }
+
+    private fun pickWidget() {
+        val pm = packageManager
+        val providers = widgetMgr.installedProviders
+            .sortedBy { it.loadLabel(pm).toString().lowercase() }
+        if (providers.isEmpty()) {
+            Toast.makeText(this, "Koi widget installed nahi hai", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val actions = providers.map { info ->
+            info.loadLabel(pm).toString() to { bindWidget(info) }
+        }
+        showSheet("Add widget", null, actions)
+    }
+
+    private fun bindWidget(info: AppWidgetProviderInfo) {
+        val id = widgetHost.allocateAppWidgetId()
+        if (widgetMgr.bindAppWidgetIdIfAllowed(id, info.provider)) {
+            afterBind(id)
+        } else {
+            pendingWidgetId = id
+            @Suppress("DEPRECATION")
+            startActivityForResult(
+                Intent(AppWidgetManager.ACTION_APPWIDGET_BIND).apply {
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
+                },
+                REQ_BIND
+            )
+        }
+    }
+
+    private fun afterBind(id: Int) {
+        val info = widgetMgr.getAppWidgetInfo(id)
+        if (info == null) {
+            widgetHost.deleteAppWidgetId(id)
+            return
+        }
+        if (info.configure != null) {
+            pendingWidgetId = id
+            @Suppress("DEPRECATION")
+            startActivityForResult(
+                Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                    component = info.configure
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                },
+                REQ_CONFIG
+            )
+        } else {
+            finishAddWidget(id, info)
+        }
+    }
+
+    private fun finishAddWidget(id: Int, info: AppWidgetProviderInfo) {
+        addWidgetView(id, info)
+        saveWidgetIds()
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQ_BIND -> {
+                if (resultCode == RESULT_OK) afterBind(pendingWidgetId)
+                else widgetHost.deleteAppWidgetId(pendingWidgetId)
+            }
+            REQ_CONFIG -> {
+                if (resultCode == RESULT_OK) {
+                    val info = widgetMgr.getAppWidgetInfo(pendingWidgetId)
+                    if (info != null) finishAddWidget(pendingWidgetId, info)
+                    else widgetHost.deleteAppWidgetId(pendingWidgetId)
+                } else {
+                    widgetHost.deleteAppWidgetId(pendingWidgetId)
+                }
+            }
+        }
+    }
+
+    private fun addWidgetView(id: Int, info: AppWidgetProviderInfo) {
+        val hv: AppWidgetHostView = widgetHost.createView(this, id, info)
+        hv.tag = id
+        hv.setOnLongClickListener {
+            showSheet("Widget", null, listOf("Remove widget" to {
+                widgetHost.deleteAppWidgetId(id)
+                widgetBox.removeView(hv)
+                saveWidgetIds()
+            }))
+            true
+        }
+        val h = dp(max(info.minHeight, 60))
+        widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, h).apply {
+            setMargins(dp(12), dp(8), dp(12), 0)
+        })
+    }
+
+    private fun currentWidgetIds(): List<Int> =
+        (0 until widgetBox.childCount).mapNotNull { widgetBox.getChildAt(it).tag as? Int }
+
+    private fun saveWidgetIds() {
+        prefs.edit().putString("widget_ids", currentWidgetIds().joinToString(",")).apply()
+    }
+
+    private fun restoreWidgets() {
+        val ids = prefs.getString("widget_ids", "")!!
+            .split(",").mapNotNull { it.toIntOrNull() }
+        for (id in ids) {
+            val info = widgetMgr.getAppWidgetInfo(id)
+            if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
+        }
+        saveWidgetIds()
+    }
+
+    // ---------- long-press menu (app icons) ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         if (where == "drawer") {
             actions.add("Add to Home" to { addTo(homeKeys, item.key, Int.MAX_VALUE, "Home") })
             actions.add("Add to Dock" to { addTo(dockKeys, item.key, 4, "Dock") })
-        } else {
-            actions.add("Remove" to {
-                if (where == "home") homeKeys.remove(item.key) else dockKeys.remove(item.key)
-                save()
-            })
         }
         actions.add("App info" to { openAppInfo(pkg) })
         if (!isSystemApp(pkg)) {
@@ -731,7 +963,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    private fun showSheet(heading: String, icon: Bitmap, actions: List<Pair<String, () -> Unit>>) {
+    private fun showSheet(heading: String, icon: Bitmap?, actions: List<Pair<String, () -> Unit>>) {
         val d = Dialog(this)
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val card = LinearLayout(this).apply {
@@ -746,13 +978,18 @@ class MainActivity : Activity(), GestureRoot.Host {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, dp(16), dp(8))
-            addView(ImageView(this@MainActivity).apply { setImageBitmap(icon) }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            if (icon != null) {
+                addView(
+                    ImageView(this@MainActivity).apply { setImageBitmap(icon) },
+                    LinearLayout.LayoutParams(dp(40), dp(40))
+                )
+            }
             addView(TextView(this@MainActivity).apply {
                 text = heading
                 textSize = 18f
                 setTextColor(Color.WHITE)
                 typeface = Typeface.DEFAULT_BOLD
-                setPadding(dp(12), 0, 0, 0)
+                setPadding(if (icon != null) dp(12) else 0, 0, 0, 0)
             })
         }
         card.addView(head)
@@ -768,9 +1005,12 @@ class MainActivity : Activity(), GestureRoot.Host {
                 }
             }, LinearLayout.LayoutParams(MATCH, WRAP))
         }
+        val scroll = ScrollView(this).apply {
+            addView(card, MATCH, WRAP)
+        }
         val wrap = FrameLayout(this).apply {
             setPadding(dp(12), 0, dp(12), dp(24))
-            addView(card, MATCH, WRAP)
+            addView(scroll, MATCH, WRAP)
         }
         d.setContentView(wrap)
         d.window?.apply {
@@ -797,6 +1037,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
+    // ---------- app open animation ----------
     private fun launch(view: View, item: AppItem) {
         if (pendingReturn) return
         try {
@@ -890,6 +1131,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onResume()
         if (pendingReturn) resetLaunch()
         applyIconStyle()
+        applyClock()
         if (!appsLoaded || currentPack() != loadedPack) loadApps()
     }
 
@@ -1042,6 +1284,8 @@ class AppAdapter(
         style = s
         notifyDataSetChanged()
     }
+
+    fun keyAt(pos: Int): String? = items.getOrNull(pos)?.key
 
     fun move(from: Int, to: Int) {
         items.add(to, items.removeAt(from))
