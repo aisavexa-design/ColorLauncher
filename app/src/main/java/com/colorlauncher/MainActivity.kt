@@ -15,7 +15,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -25,6 +24,7 @@ import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
@@ -37,8 +37,12 @@ import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
@@ -119,7 +123,6 @@ class OpenCard(ctx: Context) : View(ctx) {
             lerp(from.right, w, t),
             lerp(from.bottom, h, t)
         )
-        // corners: shuru me icon jaise, beech me bade rounded, bilkul aakhir me hi seedhe
         val grow = (t / 0.35f).coerceIn(0f, 1f)
         val settle = ((t - 0.85f) / 0.15f).coerceIn(0f, 1f)
         val radius = lerp(fromRadius, bigRadius, grow) * (1f - settle)
@@ -127,7 +130,6 @@ class OpenCard(ctx: Context) : View(ctx) {
         fill.alpha = (255 * (t * 4f).coerceIn(0f, 1f)).toInt()
         canvas.drawRoundRect(rect, radius, radius, fill)
 
-        // icon poore time dikhta hai (splash jaisa), isliye slow app me bhi wait natural lagta hai
         val ic = icon ?: return
         val size = lerp(iconFrom, iconTo, t)
         val cx = rect.centerX()
@@ -157,6 +159,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         fun onDragStart()
         fun onDrag(dy: Float)
         fun onDragEnd(vy: Float)
+        fun onLongPress(x: Float, y: Float)
     }
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
@@ -164,6 +167,9 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private var downY = 0f
     private var dragging = false
     private var vt: VelocityTracker? = null
+    private val longPress = Runnable {
+        if (!dragging) host.onLongPress(downX, downY)
+    }
 
     private fun track(e: MotionEvent) {
         when (e.actionMasked) {
@@ -174,11 +180,14 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 vt?.recycle()
                 vt = VelocityTracker.obtain()
                 vt?.addMovement(e)
+                removeCallbacks(longPress)
+                postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
             }
             MotionEvent.ACTION_MOVE -> {
                 vt?.addMovement(e)
                 val dy = e.y - downY
                 val dx = e.x - downX
+                if (abs(dy) > slop || abs(dx) > slop) removeCallbacks(longPress)
                 if (!dragging) {
                     if (abs(dy) > slop && abs(dy) > abs(dx) && host.canStartDrag(dy)) {
                         dragging = true
@@ -189,6 +198,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 if (dragging) host.onDrag(dy)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(longPress)
                 if (dragging) {
                     vt?.addMovement(e)
                     vt?.computeCurrentVelocity(1000)
@@ -231,6 +241,29 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
 
+    // quick circles (long-press on empty home)
+    private lateinit var quickSheet: FrameLayout
+    private lateinit var quickScrim: View
+    private lateinit var quickRow: LinearLayout
+    private lateinit var quickItems: List<View>
+    private var quickShown = false
+
+    // launcher settings sheet
+    private lateinit var settingsSheet: FrameLayout
+    private lateinit var settingsScrim: View
+    private lateinit var settingsHolder: FrameLayout
+    private var settingsShown = false
+
+    // saved settings
+    private var showLabels = true
+    private var cols = 4
+    private var iconDp = 56
+    private var iconShape = "original"
+    private var packPkg = ""
+
+    private var topInset = 0
+    private var bottomInset = 0
+
     private var allApps: List<AppItem> = emptyList()
     private val homeKeys = mutableListOf<String>()
     private val dockKeys = mutableListOf<String>()
@@ -255,10 +288,19 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         homeKeys.addAll(loadKeys("home"))
         dockKeys.addAll(loadKeys("dock"))
+        showLabels = prefs.getBoolean("labels", true)
+        cols = prefs.getInt("cols", 4)
+        iconDp = prefs.getInt("iconDp", 56)
+        iconShape = prefs.getString("shape", "original") ?: "original"
+        packPkg = prefs.getString("pack", "") ?: ""
 
-        homeAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { i -> showMenu(i, "home") })
+        homeAdapter = AppAdapter(showLabels, { v, i -> launch(v, i) }, { i -> showMenu(i, "home") })
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, { i -> showMenu(i, "dock") })
-        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { i -> showMenu(i, "drawer") })
+        drawerAdapter = AppAdapter(showLabels, { v, i -> launch(v, i) }, { i -> showMenu(i, "drawer") })
+        val px = dp(iconDp)
+        homeAdapter.iconPx = px
+        dockAdapter.iconPx = px
+        drawerAdapter.iconPx = px
 
         val clock = TextClock(this).apply {
             format12Hour = "h:mm"
@@ -283,7 +325,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setPadding(dp(24), dp(32), dp(24), 0)
         }
         homeGrid = RecyclerView(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 4)
+            layoutManager = GridLayoutManager(this@MainActivity, cols)
             adapter = homeAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
@@ -297,7 +339,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             itemAnimator = null
             background = GradientDrawable().apply {
                 cornerRadius = dp(30).toFloat()
-                setColor(0x33FFFFFF)
+                setColor(0x33FFFFFF.toInt())
             }
             setPadding(dp(6), dp(6), dp(6), dp(6))
         }
@@ -314,7 +356,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         // drawer: background transparent (no blur, no scrim)
         drawerList = FadeRecycler(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 4)
+            layoutManager = GridLayoutManager(this@MainActivity, cols)
             adapter = drawerAdapter
             setHasFixedSize(true)
             setItemViewCacheSize(24)
@@ -369,10 +411,66 @@ class MainActivity : Activity(), GestureRoot.Host {
         stage.addView(home, MATCH, MATCH)
         stage.addView(drawer, MATCH, MATCH)
 
+        // ----- quick circles sheet -----
+        quickScrim = View(this).apply {
+            setBackgroundColor(0x66000000.toInt())
+            setOnClickListener { hideQuick(true) }
+        }
+        val items = listOf(
+            quickItem(android.R.drawable.ic_menu_gallery, "Wallpaper") {
+                hideQuick(true)
+                openWallpaper()
+            },
+            quickItem(android.R.drawable.ic_menu_preferences, "Settings") {
+                hideQuick(true)
+                showSettings()
+            },
+            quickItem(android.R.drawable.ic_menu_search, "Search") {
+                hideQuick(true)
+                openSearch()
+            },
+            quickItem(android.R.drawable.ic_menu_delete, "Reset") {
+                hideQuick(true)
+                confirmReset()
+            }
+        )
+        quickItems = items
+        quickRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), 0, dp(12), 0)
+            items.forEach { addView(it, LinearLayout.LayoutParams(0, WRAP, 1f)) }
+        }
+        quickSheet = FrameLayout(this).apply {
+            visibility = View.GONE
+            addView(quickScrim, MATCH, MATCH)
+            addView(quickRow, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        }
+
+        // ----- settings sheet -----
+        settingsScrim = View(this).apply {
+            setBackgroundColor(0x80000000.toInt())
+            setOnClickListener { hideSettings(true) }
+        }
+        settingsHolder = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                setColor(0xF01C1C20.toInt())
+                val r = dp(28).toFloat()
+                cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+            }
+            isClickable = true
+        }
+        settingsSheet = FrameLayout(this).apply {
+            visibility = View.GONE
+            addView(settingsScrim, MATCH, MATCH)
+            addView(settingsHolder, FrameLayout.LayoutParams(MATCH, dp(400), Gravity.BOTTOM))
+        }
+
         openCard = OpenCard(this).apply { visibility = View.GONE }
 
         root = GestureRoot(this, this)
         root.addView(stage, MATCH, MATCH)
+        root.addView(quickSheet, MATCH, MATCH)
+        root.addView(settingsSheet, MATCH, MATCH)
         root.addView(openCard, MATCH, MATCH)
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
@@ -411,6 +509,8 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun applyInsets(top: Int, bottom: Int, ime: Int) {
+        topInset = top
+        bottomInset = bottom
         home.setPadding(0, top + dp(24), 0, bottom + dp(8))
         (header.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
         header.requestLayout()
@@ -447,24 +547,28 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun loadApps() {
-        val sizePx = dp(56)
+        val sizePx = dp(iconDp)
+        val shapeNow = iconShape
+        val packNow = packPkg
         bg.execute {
             val pm = packageManager
+            val loaded = if (packNow.isNotEmpty()) IconPacks.load(pm, packNow) else null
             val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val apps = pm.queryIntentActivities(main, 0)
                 .filter { it.activityInfo.packageName != packageName }
                 .map { ri ->
                     val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+                    val key = cn.flattenToString()
                     val intent = Intent(Intent.ACTION_MAIN)
                         .addCategory(Intent.CATEGORY_LAUNCHER)
                         .setComponent(cn)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                    AppItem(
-                        ri.loadLabel(pm).toString(),
-                        cn.flattenToString(),
-                        toBitmap(ri.loadIcon(pm), sizePx),
-                        intent
-                    )
+                    val packIcon = loaded?.drawableFor(key)
+                    val bmp = if (packIcon != null)
+                        IconStyler.render(packIcon, sizePx, shapeNow, true)
+                    else
+                        IconStyler.render(ri.loadIcon(pm), sizePx, shapeNow, false)
+                    AppItem(ri.loadLabel(pm).toString(), key, bmp, intent)
                 }
                 .sortedBy { it.label.lowercase() }
             runOnUiThread {
@@ -483,13 +587,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         (dock.layoutManager as GridLayoutManager).spanCount = maxOf(1, dockItems.size)
         dock.visibility = if (dockItems.isEmpty()) View.GONE else View.VISIBLE
         hint.visibility = if (homeKeys.isEmpty() && dockItems.isEmpty()) View.VISIBLE else View.GONE
-    }
-
-    private fun toBitmap(dr: Drawable, size: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        dr.setBounds(0, 0, size, size)
-        dr.draw(Canvas(bmp))
-        return bmp
     }
 
     // ---------- search ----------
@@ -513,7 +610,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- long-press menu ----------
+    private fun openSearch() {
+        animateProgress(1f, 0f)
+        root.postDelayed({ setSearchMode(true) }, 220)
+    }
+
+    // ---------- long-press menu (icon par) ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
         val options = if (where == "drawer")
@@ -557,9 +659,336 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
+    // ---------- quick circles (khali jagah par long-press) ----------
+    override fun onLongPress(x: Float, y: Float) {
+        if (opening || quickShown || settingsShown || searching || progress > 0.01f) return
+        if (hitsIcon(homeGrid, x, y) || hitsIcon(dock, x, y)) return
+        showQuick()
+    }
+
+    private fun hitsIcon(rv: RecyclerView, x: Float, y: Float): Boolean {
+        if (rv.visibility != View.VISIBLE) return false
+        val a = IntArray(2)
+        val b = IntArray(2)
+        rv.getLocationInWindow(a)
+        root.getLocationInWindow(b)
+        val lx = x - (a[0] - b[0])
+        val ly = y - (a[1] - b[1])
+        if (lx < 0 || ly < 0 || lx > rv.width || ly > rv.height) return false
+        return rv.findChildViewUnder(lx, ly) != null
+    }
+
+    private fun quickItem(iconRes: Int, label: String, onTap: () -> Unit): LinearLayout {
+        val circle = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x40FFFFFF.toInt())
+            }
+            addView(
+                ImageView(this@MainActivity).apply {
+                    setImageResource(iconRes)
+                    setColorFilter(Color.WHITE)
+                },
+                FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER)
+            )
+        }
+        val text = TextView(this).apply {
+            this.text = label
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(circle, LinearLayout.LayoutParams(dp(64), dp(64)))
+            addView(text, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(8) })
+            setOnClickListener { onTap() }
+        }
+    }
+
+    private fun showQuick() {
+        if (quickShown || settingsShown || opening || progress > 0.01f) return
+        quickShown = true
+        root.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        (quickRow.layoutParams as FrameLayout.LayoutParams).bottomMargin = bottomInset + dp(40)
+        quickRow.requestLayout()
+        quickSheet.visibility = View.VISIBLE
+        quickScrim.animate().cancel()
+        quickScrim.alpha = 0f
+        quickScrim.animate().alpha(1f).setDuration(220).start()
+        quickItems.forEachIndexed { i, v ->
+            v.animate().cancel()
+            v.alpha = 0f
+            v.translationY = dp(110).toFloat()
+            v.scaleX = 0.85f
+            v.scaleY = 0.85f
+            v.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+                .setStartDelay(i * 45L).setDuration(360)
+                .setInterpolator(OvershootInterpolator(1.0f)).start()
+        }
+        stage.pivotX = stage.width / 2f
+        stage.pivotY = stage.height / 2f
+        stage.animate().scaleX(0.94f).scaleY(0.94f).setDuration(260)
+            .setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun hideQuick(animate: Boolean) {
+        if (!quickShown) return
+        quickShown = false
+        stage.animate().cancel()
+        quickItems.forEach { it.animate().cancel() }
+        quickScrim.animate().cancel()
+        if (!animate) {
+            quickSheet.visibility = View.GONE
+            stage.scaleX = 1f
+            stage.scaleY = 1f
+            return
+        }
+        stage.animate().scaleX(1f).scaleY(1f).setDuration(200)
+            .setInterpolator(DecelerateInterpolator()).start()
+        quickItems.forEach { v ->
+            v.animate().alpha(0f).translationY(dp(60).toFloat()).setStartDelay(0).setDuration(160).start()
+        }
+        quickScrim.animate().alpha(0f).setDuration(180).withEndAction {
+            if (!quickShown) quickSheet.visibility = View.GONE
+        }.start()
+    }
+
+    private fun openWallpaper() {
+        try {
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Wallpaper"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Wallpaper picker not found", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun confirmReset() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset home screen?")
+            .setMessage("Home aur dock ke saare icons hata diye jayenge.")
+            .setPositiveButton("Reset") { _, _ ->
+                homeKeys.clear()
+                dockKeys.clear()
+                save()
+                refreshHome()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---------- launcher settings ----------
+    private fun tv(text: String, sp: Float, color: Int, bold: Boolean = false): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = sp
+            setTextColor(color)
+            if (bold) typeface = Typeface.DEFAULT_BOLD
+        }
+
+    private fun section(col: LinearLayout, title: String) {
+        col.addView(
+            tv(title, 13f, 0xAAFFFFFF.toInt()),
+            LinearLayout.LayoutParams(WRAP, WRAP).apply {
+                topMargin = dp(22)
+                bottomMargin = dp(8)
+            }
+        )
+    }
+
+    private fun chipRow(
+        options: List<Pair<String, String>>,
+        selected: String,
+        onSelect: (String) -> Unit
+    ): View {
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val chips = ArrayList<Pair<String, TextView>>()
+        var current = selected
+        fun paint() {
+            for ((k, view) in chips) {
+                val on = k == current
+                view.setTextColor(if (on) 0xFF111111.toInt() else Color.WHITE)
+                (view.background as GradientDrawable)
+                    .setColor(if (on) 0xFFFFFFFF.toInt() else 0x26FFFFFF)
+            }
+        }
+        for ((k, name) in options) {
+            val chip = TextView(this).apply {
+                text = name
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(9), dp(16), dp(9))
+                background = GradientDrawable().apply { cornerRadius = dp(20).toFloat() }
+                setOnClickListener {
+                    current = k
+                    paint()
+                    onSelect(k)
+                }
+            }
+            chips.add(k to chip)
+            row.addView(chip, LinearLayout.LayoutParams(WRAP, WRAP).apply { rightMargin = dp(8) })
+        }
+        paint()
+        scroll.addView(row)
+        return scroll
+    }
+
+    private fun applyIconPx() {
+        val px = dp(iconDp)
+        homeAdapter.iconPx = px
+        dockAdapter.iconPx = px
+        drawerAdapter.iconPx = px
+        homeAdapter.refresh()
+        dockAdapter.refresh()
+        drawerAdapter.refresh()
+    }
+
+    private fun buildSettings(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(12), dp(22), bottomInset + dp(28))
+        }
+        col.addView(
+            View(this).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(2).toFloat()
+                    setColor(0x55FFFFFF.toInt())
+                }
+            },
+            LinearLayout.LayoutParams(dp(40), dp(4)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(14)
+            }
+        )
+        col.addView(tv("Launcher settings", 20f, Color.WHITE, true))
+
+        // icon labels on/off
+        val labelRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        labelRow.addView(tv("Icon labels", 16f, Color.WHITE), LinearLayout.LayoutParams(0, WRAP, 1f))
+        labelRow.addView(Switch(this).apply {
+            isChecked = showLabels
+            setOnCheckedChangeListener { _, on ->
+                showLabels = on
+                prefs.edit().putBoolean("labels", on).apply()
+                homeAdapter.showLabel = on
+                drawerAdapter.showLabel = on
+                homeAdapter.refresh()
+                drawerAdapter.refresh()
+            }
+        })
+        col.addView(labelRow, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(20) })
+
+        // grid columns
+        section(col, "Grid columns")
+        col.addView(
+            chipRow(listOf("4" to "4", "5" to "5", "6" to "6"), cols.toString()) { k ->
+                cols = k.toInt()
+                prefs.edit().putInt("cols", cols).apply()
+                (homeGrid.layoutManager as GridLayoutManager).spanCount = cols
+                (drawerList.layoutManager as GridLayoutManager).spanCount = cols
+            }
+        )
+
+        // icon size
+        section(col, "Icon size")
+        val sizeText = tv("${iconDp} dp", 14f, Color.WHITE)
+        col.addView(sizeText)
+        col.addView(SeekBar(this).apply {
+            max = 32
+            progress = iconDp - 40
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    iconDp = 40 + p
+                    sizeText.text = "${iconDp} dp"
+                    applyIconPx()
+                }
+
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+
+                override fun onStopTrackingTouch(sb: SeekBar?) {
+                    prefs.edit().putInt("iconDp", iconDp).apply()
+                    loadApps()
+                }
+            })
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        // icon shape
+        section(col, "Icon shape")
+        col.addView(chipRow(IconStyler.shapes, iconShape) { k ->
+            iconShape = k
+            prefs.edit().putString("shape", k).apply()
+            loadApps()
+        })
+
+        // icon packs
+        section(col, "Icon pack")
+        val packs = IconPacks.find(packageManager)
+        val packOptions = listOf("" to "Default") + packs.map { it.pkg to it.label }
+        col.addView(chipRow(packOptions, packPkg) { k ->
+            packPkg = k
+            prefs.edit().putString("pack", k).apply()
+            loadApps()
+        })
+        if (packs.isEmpty()) {
+            col.addView(
+                tv("No icon packs found. Install an icon pack app, then reopen settings.", 12f, 0x99FFFFFF.toInt()),
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(8) }
+            )
+        }
+        return col
+    }
+
+    private fun showSettings() {
+        if (settingsShown) return
+        settingsShown = true
+        val h = (root.height * 0.68f).toInt()
+        settingsHolder.removeAllViews()
+        val sv = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(buildSettings())
+        }
+        settingsHolder.addView(sv, MATCH, MATCH)
+        val lp = settingsHolder.layoutParams as FrameLayout.LayoutParams
+        lp.height = h
+        settingsHolder.layoutParams = lp
+        settingsSheet.visibility = View.VISIBLE
+        settingsScrim.animate().cancel()
+        settingsHolder.animate().cancel()
+        settingsScrim.alpha = 0f
+        settingsScrim.animate().alpha(1f).setDuration(220).start()
+        settingsHolder.translationY = h.toFloat()
+        settingsHolder.animate().translationY(0f).setDuration(340)
+            .setInterpolator(PathInterpolator(0.2f, 0f, 0f, 1f)).start()
+    }
+
+    private fun hideSettings(animate: Boolean) {
+        if (!settingsShown) return
+        settingsShown = false
+        settingsHolder.animate().cancel()
+        settingsScrim.animate().cancel()
+        if (!animate) {
+            settingsSheet.visibility = View.GONE
+            settingsHolder.removeAllViews()
+            return
+        }
+        val h = settingsHolder.height.toFloat()
+        settingsScrim.animate().alpha(0f).setDuration(200).start()
+        settingsHolder.animate().translationY(h).setDuration(220)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                if (!settingsShown) {
+                    settingsSheet.visibility = View.GONE
+                    settingsHolder.removeAllViews()
+                }
+            }.start()
+    }
+
     // ---------- app open animation: icon ki origin se, close par koi animation nahi ----------
-    // Har app ke liye same timing: pehle card icon se phailta hai (OPEN_MS),
-    // app uske beech (OPEN_START_AT) par launch hota hai, taaki fast aur slow app dono ek jaise lagein.
     private val OPEN_MS = 300L
     private val OPEN_START_AT = 0.35f
 
@@ -570,7 +999,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             val rl = IntArray(2)
             view.getLocationInWindow(loc)
             root.getLocationInWindow(rl)
-            // touch-scale (0.92) ka offset hata kar exact icon ka rect
             val p = view.parent as? View
             val w = view.width * (p?.scaleX ?: 1f)
             val h = view.height * (p?.scaleY ?: 1f)
@@ -587,7 +1015,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         openAnim?.cancel()
         opening = true
 
-        // card ka color: icon ka average color, thoda dark
         val px = Bitmap.createScaledBitmap(item.icon, 1, 1, true).getPixel(0, 0)
         val cardColor = Color.rgb(
             (Color.red(px) * 0.5f).toInt(),
@@ -610,10 +1037,8 @@ class MainActivity : Activity(), GestureRoot.Host {
             if (started || !opening) return
             started = true
             try {
-                // system ki apni animation band, sirf hamari origin animation dikhegi
                 val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
                 startActivity(item.intent, opts.toBundle())
-                // safety: agar app nahi khula to launcher normal ho jaye
                 stage.postDelayed({
                     if (opening && resumed) resetStage()
                 }, 2000)
@@ -672,13 +1097,15 @@ class MainActivity : Activity(), GestureRoot.Host {
     override fun onStop() {
         super.onStop()
         if (opening) resetStage()
+        hideQuick(false)
+        hideSettings(false)
     }
 
     // ---------- drawer gesture ----------
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
     override fun canStartDrag(dy: Float): Boolean {
-        if (searching || opening) return false
+        if (searching || opening || quickShown || settingsShown) return false
         return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
     }
 
@@ -744,13 +1171,19 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (searching) setSearchMode(false)
-        else if (progress > 0.5f) animateProgress(0f, 0f)
+        when {
+            settingsShown -> hideSettings(true)
+            quickShown -> hideQuick(true)
+            searching -> setSearchMode(false)
+            progress > 0.5f -> animateProgress(0f, 0f)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         if (opening) resetStage()
+        hideQuick(false)
+        hideSettings(false)
         if (searching) setSearchMode(false)
         if (progress > 0.01f) animateProgress(0f, 0f)
     }
@@ -762,12 +1195,13 @@ class MainActivity : Activity(), GestureRoot.Host {
 }
 
 class AppAdapter(
-    private val showLabel: Boolean,
+    var showLabel: Boolean,
     private val onClick: (View, AppItem) -> Unit,
     private val onLong: (AppItem) -> Unit
 ) : RecyclerView.Adapter<AppAdapter.VH>() {
 
     private var items: List<AppItem> = emptyList()
+    var iconPx: Int = 0
 
     init {
         setHasStableIds(true)
@@ -775,6 +1209,10 @@ class AppAdapter(
 
     fun submit(list: List<AppItem>) {
         items = list
+        notifyDataSetChanged()
+    }
+
+    fun refresh() {
         notifyDataSetChanged()
     }
 
@@ -797,7 +1235,6 @@ class AppAdapter(
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
             setPadding(0, (6 * d).toInt(), 0, 0)
-            visibility = if (showLabel) View.VISIBLE else View.GONE
             layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         }
         val root = LinearLayout(ctx).apply {
@@ -813,6 +1250,13 @@ class AppAdapter(
 
     override fun onBindViewHolder(h: VH, position: Int) {
         val item = items[position]
+        val lp = h.icon.layoutParams
+        if (iconPx > 0 && lp.width != iconPx) {
+            lp.width = iconPx
+            lp.height = iconPx
+            h.icon.layoutParams = lp
+        }
+        h.label.visibility = if (showLabel) View.VISIBLE else View.GONE
         h.icon.setImageBitmap(item.icon)
         h.label.text = item.label
         h.root.setOnClickListener { onClick(h.icon, item) }
