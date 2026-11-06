@@ -132,10 +132,8 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         )
         sheet.color = color
         sheet.alpha = (minOf(1f, tt * 6f) * 255).toInt()
-        // corners: icon ke corner se screen ke corner tak badhte hain, bilkul end me flat
-        val base = iconCorner + (screenCorner - iconCorner) * minOf(1f, tt * 1.5f)
-        val flat = ((tt - 0.9f) / 0.1f).coerceIn(0f, 1f)
-        val rad = base * (1f - flat)
+// corners icon ke corner se screen corner tak badhte hain aur end tak rounded rehte hain
+val rad = iconCorner + (screenCorner - iconCorner) * tt.coerceIn(0f, 1f)
         canvas.drawRoundRect(cur, rad, rad, sheet)
         // icon same size me sheet ke beech me rehta hai (splash jaisa)
         val bmp = icon ?: return
