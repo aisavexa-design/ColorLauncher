@@ -10,6 +10,7 @@ import android.app.Dialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -581,14 +582,23 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- long-press menu (drawer only) ----------
+    // ---------- long-press menu ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
-        val actions: List<Pair<String, () -> Unit>> = listOf(
-            "Add to Home" to { addTo(homeKeys, item.key, Int.MAX_VALUE, "Home") },
-            "Add to Dock" to { addTo(dockKeys, item.key, 4, "Dock") },
-            "App info" to { openAppInfo(pkg) }
-        )
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        if (where == "drawer") {
+            actions.add("Add to Home" to { addTo(homeKeys, item.key, Int.MAX_VALUE, "Home") })
+            actions.add("Add to Dock" to { addTo(dockKeys, item.key, 4, "Dock") })
+        } else {
+            actions.add("Remove" to {
+                if (where == "home") homeKeys.remove(item.key) else dockKeys.remove(item.key)
+                save()
+            })
+        }
+        actions.add("App info" to { openAppInfo(pkg) })
+        if (!isSystemApp(pkg)) {
+            actions.add("Uninstall" to { uninstallApp(pkg) })
+        }
         showSheet(item.label, item.icon, actions)
     }
 
@@ -596,6 +606,21 @@ class MainActivity : Activity(), GestureRoot.Host {
         try {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
         } catch (e: Exception) {
+        }
+    }
+
+    private fun isSystemApp(pkg: String): Boolean = try {
+        val ai = packageManager.getApplicationInfo(pkg, 0)
+        (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+    } catch (e: Exception) {
+        true
+    }
+
+    private fun uninstallApp(pkg: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Uninstall nahi ho paya", Toast.LENGTH_SHORT).show()
         }
     }
 
