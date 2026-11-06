@@ -12,6 +12,7 @@
         android:allowBackup="false"
         android:label="ColorLauncher"
         android:theme="@style/Theme.ColorLauncher">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -25,5 +26,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
     </application>
 </manifest>
