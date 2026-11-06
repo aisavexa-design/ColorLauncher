@@ -448,6 +448,8 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
+            // Rubber-band overscroll: edge par khinchne par stretch hota hai
+            overScrollMode = View.OVER_SCROLL_ALWAYS
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
             setPadding(dp(8), dp(64), dp(8), 0)
@@ -532,7 +534,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         dragHelper(dockAdapter, dockKeys, dock, null).attachToRecyclerView(dock)
         restoreWidgets()
 
-        // Pehle cache se icons turant dikhao, phir background mein update karo
         showCachedApps()
         loadApps()
     }
@@ -562,6 +563,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.invalidateItemDecorations()
     }
 
+    /** Display ka sabse tez refresh rate (jaise 120Hz) window ke liye maangta hai. */
     @Suppress("DEPRECATION")
     private fun enableHighRefresh() {
         try {
@@ -581,10 +583,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     // ---------- drag and drop ----------
-    /**
-     * Drag ab app ki key se order badalta hai, adapter position se nahi. Isse
-     * drop ke baad icon wahin rehta hai jahan chhoda gaya tha.
-     */
+    /** Drag app ki key se order badalta hai, taaki drop ke baad icon wahin rahe. */
     private fun dragHelper(
         adapter: AppAdapter,
         keys: MutableList<String>,
@@ -1130,6 +1129,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     override fun onResume() {
         super.onResume()
         if (pendingReturn) resetLaunch()
+        enableHighRefresh()
         applyIconStyle()
         applyClock()
         if (!appsLoaded || currentPack() != loadedPack) loadApps()
@@ -1243,6 +1243,16 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onNewIntent(intent)
         if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
         if (progress > 0.01f) animateProgress(0f, 0f)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        widgetHost.startListening()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        widgetHost.stopListening()
     }
 
     override fun onDestroy() {
