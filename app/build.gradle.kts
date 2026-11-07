@@ -9,30 +9,16 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.launchersam"
+        applicationId = "com.colorlauncher"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
     }
 
-    signingConfigs {
-        create("release") {
-            // GitHub Actions se env variables aate hain. Local build par ye null rehta hai.
-            val path = System.getenv("KEYSTORE_PATH")
-            if (path != null) {
-                storeFile = file(path)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
-            }
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -55,4 +41,6 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.2.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("androidx.dynamicanimation:dynamicanimation:1.0.0")
 }
