@@ -194,10 +194,26 @@ class SettingsActivity : Activity() {
                     "Lower value = faster animation"
                 ) { prefs.edit().putInt("anim_ms", it).apply() }
             )
+            addView(divider())
+            addView(
+                switchRow(
+                    "Unlock animation",
+                    "Icons glide into place when the phone is unlocked.",
+                    prefs.getBoolean("fx_intro", true)
+                ) { prefs.edit().putBoolean("fx_intro", it).apply() }
+            )
         })
 
         content.addView(sectionTitle("Effects"))
         content.addView(card().apply {
+            addView(
+                switchRow(
+                    "Background blur",
+                    "Blurs the home screen when the app drawer or a folder opens.",
+                    prefs.getBoolean("fx_blur", true)
+                ) { prefs.edit().putBoolean("fx_blur", it).apply() }
+            )
+            addView(divider())
             addView(
                 switchRow(
                     "Icon blur",
@@ -212,11 +228,16 @@ class SettingsActivity : Activity() {
             addView(
                 sliderRow(
                     "Icon size", 40, 80, prefs.getInt("icon_size", 60), "dp",
-                    "Home, dock and app drawer icons"
+                    "Home and app drawer icons", 1
                 ) { prefs.edit().putInt("icon_size", it).apply() }
             )
             addView(divider())
-            addView(shapeRow())
+            addView(
+                chipRow(
+                    "Icon shape", "Clip style for home, dock and drawer icons",
+                    "icon_shape", listOf("Squircle", "Circle", "Square"), 0
+                )
+            )
             addView(divider())
             addView(
                 switchRow(
@@ -224,6 +245,23 @@ class SettingsActivity : Activity() {
                     "Show app names under icons",
                     prefs.getBoolean("icon_label", true)
                 ) { prefs.edit().putBoolean("icon_label", it).apply() }
+            )
+        })
+
+        content.addView(sectionTitle("Dock"))
+        content.addView(card().apply {
+            addView(
+                chipRow(
+                    "Dock size", "Icon size in the dock",
+                    "dock_size", listOf("Small", "Medium", "Large"), 1
+                )
+            )
+            addView(divider())
+            addView(
+                chipRow(
+                    "Dock position", "Where the dock sits on the home screen",
+                    "dock_pos", listOf("Bottom", "Above"), 0
+                )
             )
         })
 
@@ -237,14 +275,14 @@ class SettingsActivity : Activity() {
             addView(
                 sliderRow(
                     "Horizontal gap", 0, 40, prefs.getInt("gap_h", 8), "dp",
-                    "Space between icons left and right"
+                    "Space between icons left and right", 1
                 ) { prefs.edit().putInt("gap_h", it).apply() }
             )
             addView(divider())
             addView(
                 sliderRow(
                     "Vertical gap", 0, 40, prefs.getInt("gap_v", 12), "dp",
-                    "Space between icon rows"
+                    "Space between icon rows", 1
                 ) { prefs.edit().putInt("gap_v", it).apply() }
             )
         })
@@ -356,20 +394,20 @@ class SettingsActivity : Activity() {
         return col
     }
 
-    private fun shapeRow(): View {
+    /** Chips wali choice (prefs mein index save hota hai). */
+    private fun chipRow(heading: String, desc: String, key: String, names: List<String>, def: Int): View {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
-        col.addView(texts("Icon shape", "Clip style for home, dock and drawer icons"))
+        col.addView(texts(heading, desc))
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(10), 0, 0)
         }
-        val names = listOf("Squircle", "Circle", "Square")
         val chips = mutableListOf<TextView>()
         fun paint() {
-            val sel = prefs.getInt("icon_shape", 0)
+            val sel = prefs.getInt(key, def)
             chips.forEachIndexed { i, c ->
                 c.setTextColor(if (i == sel) Color.WHITE else pal.text)
                 c.background = GradientDrawable().apply {
@@ -385,7 +423,7 @@ class SettingsActivity : Activity() {
                 gravity = Gravity.CENTER
                 setPadding(dp(12), dp(10), dp(12), dp(10))
                 setOnClickListener {
-                    prefs.edit().putInt("icon_shape", i).apply()
+                    prefs.edit().putInt(key, i).apply()
                     paint()
                 }
             }
