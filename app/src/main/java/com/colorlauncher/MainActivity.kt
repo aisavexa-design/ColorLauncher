@@ -390,9 +390,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var currentPage = 0
     private var pageOffset = 0f
     private var pageAnimator: ValueAnimator? = null
-    private var pageDragging = false
-    private var pageDragStartX = 0f
-    private var pageDragBase = 0f
+    private var lastEdgeTime = 0L
 
     private var folderOpen = false
     private var currentFolderId: String? = null
@@ -509,7 +507,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setPadding(dp(24), dp(32), dp(24), 0)
         }
 
-        // Pages ka container: sab pages ek row mein, translationX se slide
+        // Pages ka container
         pageRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
@@ -517,7 +515,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             clipChildren = true
             addView(pageRow, FrameLayout.LayoutParams(MATCH, MATCH))
         }
-        rebuildPages()
 
         pageDots = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -539,6 +536,9 @@ class MainActivity : Activity(), GestureRoot.Host {
             orientation = LinearLayout.VERTICAL
             addView(dock, LinearLayout.LayoutParams(MATCH, WRAP))
         }
+
+        // Ab dock aur pageDots bane hain, isliye ab pages bana sakte hain (drags bhi yahin attach hote hain)
+        rebuildPages()
 
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -706,7 +706,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         setProgress(0f)
         applyClock()
         applyDockStyle()
-        attachDrags()
         restoreWidgets()
 
         registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
@@ -777,7 +776,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Pages ka UI banata hai (pageCount ke hisaab se). */
+    /** Pages ka UI banata hai (pageCount ke hisaab se). Dock aur pageDots pehle bane hone chahiye. */
     private fun rebuildPages() {
         pageRow.removeAllViews()
         pageGrids.clear()
@@ -801,7 +800,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             pageRow.addView(grid, LinearLayout.LayoutParams(0, MATCH, 1f))
         }
         pageRow.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
-        // Har page ko width = pageHost width chahiye, isliye layout pass ke baad set karte hain
         pageHost.post { layoutPages() }
         pageDots.removeAllViews()
         for (p in 0 until pageCount) {
@@ -892,8 +890,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    private var lastEdgeTime = 0L
-
     /** Naya khali page (home slots mein 24 aur cells). */
     private fun addPage() {
         pageCount++
@@ -903,7 +899,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         refreshHome()
     }
 
-    /** Khali pages ko end se hata deta hai (sirf bina items wale last pages). */
+    /** Khali pages ko end se hata deta hai. */
     private fun trimEmptyPages() {
         while (pageCount > 1) {
             val lastStart = (pageCount - 1) * PAGE_CELLS
@@ -923,13 +919,8 @@ class MainActivity : Activity(), GestureRoot.Host {
         val pos = sp.getInt("dock_pos", 0)
         val pad = when (size) { 0 -> 4; 2 -> 10; else -> 6 }
         dock.setPadding(dp(pad), dp(pad), dp(pad), dp(pad))
-        val lp = dockHolder.layoutParams as? LinearLayout.LayoutParams
-        // Position: Above ho to dock ke neeche thodi jagah
         val bottomMargin = if (pos == 1) dp(40) else dp(14)
-        dockHolder.setPadding(0, 0, 0, 0)
-        (dock.layoutParams as LinearLayout.LayoutParams).setMargins(0, 0, 0, 0)
-        lp?.bottomMargin = bottomMargin
-        dockHolder.layoutParams = lp ?: LinearLayout.LayoutParams(MATCH, WRAP).apply {
+        dockHolder.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply {
             setMargins(dp(14), 0, dp(14), bottomMargin)
         }
     }
@@ -1024,9 +1015,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun folderIdOf(k: String) = k.removePrefix(FOLDER_PREFIX)
 
-    /** Slots ka wo list jo is RecyclerView ke liye hai. Dock = dockSlots, page = homeSlots ka slice. */
-    private fun globalIndex(pageIdx: Int, local: Int) = pageIdx * PAGE_CELLS + local
-
     private fun childPosAt(rv: RecyclerView, x: Float, y: Float): Int {
         val loc = IntArray(2)
         rv.getLocationOnScreen(loc)
@@ -1034,10 +1022,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         return rv.getChildAdapterPosition(child)
     }
 
-    /**
-     * Drop par decide. from/target dono ek hi list (slots) ke index hain.
-     * Home par khali jagah par move, dusre icon par swap, app+app par folder.
-     */
+    /** Drop par decide. from/target ek hi list (slots) ke index hain. */
     private fun placeAt(slots: MutableList<String?>, from: Int, target: Int, allowFolders: Boolean) {
         val src = slots[from] ?: return
         val tgt = slots[target]
@@ -1068,7 +1053,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     /**
-     * pageIdx = -1 matlab dock. Home ke liye local index ko global (pageIdx*24 + local) mein badal ke
+     * pageIdx = -1 matlab dock. Home par local index ko global (pageIdx*24 + local) mein badal ke
      * homeSlots par kaam karta hai.
      */
     private fun dragHelper(
@@ -1139,7 +1124,6 @@ class MainActivity : Activity(), GestureRoot.Host {
                     if (pageIdx < 0) {
                         handleDrop(dockSlots, local, rv, removing, allowFolders)
                     } else {
-                        // Home: page ke local index ko global index mein badlo
                         val base = pageIdx * PAGE_CELLS
                         if (removing) {
                             val src = homeSlots.getOrNull(base + local)
@@ -1361,8 +1345,11 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun refreshHome() {
         val map = buildMap()
-        for (p in 0 until pageCount) {
-            pageAdapters[p].submit(homeSlots.subList(p * PAGE_CELLS, (p + 1) * PAGE_CELLS).map { k -> k?.let { map[it] } })
+        for (p in 0 until pageAdapters.size) {
+            val from = p * PAGE_CELLS
+            val to = minOf(from + PAGE_CELLS, homeSlots.size)
+            if (from >= to) break
+            pageAdapters[p].submit(homeSlots.subList(from, to).map { k -> k?.let { map[it] } })
         }
         dockAdapter.submit(dockSlots.map { k -> k?.let { map[it] } })
         hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
@@ -1739,7 +1726,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         d.show()
     }
 
-    /** Dock ya home (current page par khali cell) mein app rakhta hai. */
+    /** Dock ya home (pehla khali cell) mein app rakhta hai. */
     private fun addTo(slots: MutableList<String?>, key: String, name: String) {
         if (key in slots || folders.values.any { key in it.keys } || key in homeSlots) {
             Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
