@@ -11,9 +11,11 @@ import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -70,12 +72,16 @@ import java.io.FileOutputStream
 import java.util.Collections
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class AppItem(val label: String, val key: String, val intent: Intent, val icon: Bitmap)
+
+class Folder(var name: String, val keys: MutableList<String>)
 
 class SearchIcon(ctx: Context) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -305,9 +311,13 @@ class MainActivity : Activity(), GestureRoot.Host {
         private const val HOME_SLOTS = 24
         private const val DOCK_SLOTS = 4
         private const val COLS = 4
+        private const val MAX_FOLDER = 12
+        private const val FOLDER_PREFIX = "folder:"
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
+        /** Unlock intro ke liye alag-alag angles (degree). */
+        private val INTRO_ANGLES = intArrayOf(-135, -60, 210, 60, -165, 120, -30, 150)
     }
 
     private val bg = Executors.newSingleThreadExecutor()
@@ -331,6 +341,13 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
 
+    private lateinit var folderLayer: FrameLayout
+    private lateinit var folderScrim: View
+    private lateinit var folderCard: LinearLayout
+    private lateinit var folderTitle: TextView
+    private lateinit var folderGrid: RecyclerView
+    private lateinit var folderAdapter: AppAdapter
+
     private val homeGuide = GridGuide()
     private val widgetHost by lazy { AppWidgetHost(this, HOST_ID) }
     private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
@@ -343,16 +360,28 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var drawerGapH = 8
     private var drawerGapV = 12
 
-    /** Drag ke time icon ke center ki screen position (remove check ke liye). */
+    private var fxBlur = true
+    private var fxIntro = true
+    private var introPending = true
+    private var lastHomeBlur = -1
+    private var lastStageBlur = -1
+
+    /** Drag ke time icon ki screen position (remove / folder check ke liye). */
     private var dropX = 0f
     private var dropY = 0f
     private var dragStartX = 0f
     private var dragStartY = 0f
 
-    /** Fixed slots: null ka matlab khali cell. */
+    /** Fixed slots: null ka matlab khali cell. Value app key ya "folder:<id>" ho sakti hai. */
     private val homeSlots = MutableList<String?>(HOME_SLOTS) { null }
     private val dockSlots = MutableList<String?>(DOCK_SLOTS) { null }
+    private val folders = LinkedHashMap<String, Folder>()
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
+
+    private var folderOpen = false
+    private var currentFolderId: String? = null
+    private var folderF = 0f
+    private var folderAnim: ValueAnimator? = null
 
     private var progress = 0f
     private var dragBase = 0f
@@ -369,6 +398,15 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var iconBlurOn = true
     private var listBottomGap = 0
     private val emphasized = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+
+    private val userPresentReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            if (i.action == Intent.ACTION_USER_PRESENT) {
+                introPending = true
+                runIntroIfNeeded()
+            }
+        }
+    }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -415,6 +453,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         loadSlots("home", homeSlots)
         loadSlots("dock", dockSlots)
+        loadFolders()
 
         homeAdapter = AppAdapter(true, { v, i -> launch(v, i) }, null)
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
@@ -559,6 +598,53 @@ class MainActivity : Activity(), GestureRoot.Host {
             visibility = View.GONE
         }
 
+        // ---- Folder popup ----
+        folderScrim = View(this).apply {
+            setBackgroundColor(0x88000000.toInt())
+            alpha = 0f
+        }
+        folderTitle = TextView(this).apply {
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+        }
+        folderAdapter = AppAdapter(
+            true,
+            { v, i ->
+                launch(v, i)
+                closeFolderInstant()
+            },
+            { showFolderItemMenu(it) }
+        )
+        folderGrid = RecyclerView(this).apply {
+            layoutManager = GridLayoutManager(this@MainActivity, 3)
+            adapter = folderAdapter
+            overScrollMode = View.OVER_SCROLL_NEVER
+            itemAnimator = null
+            clipToPadding = false
+        }
+        folderCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(0xF21C1C22.toInt())
+            }
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+            isClickable = true
+            alpha = 0f
+            scaleX = 0.8f
+            scaleY = 0.8f
+            addView(folderTitle, LinearLayout.LayoutParams(MATCH, WRAP))
+            addView(folderGrid, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(8) })
+        }
+        folderLayer = FrameLayout(this).apply {
+            visibility = View.GONE
+            setOnClickListener { closeFolder() }
+            addView(folderScrim, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(folderCard, FrameLayout.LayoutParams(dp(300), WRAP, Gravity.CENTER))
+        }
+
         stage = FrameLayout(this)
         stage.addView(home, MATCH, MATCH)
         stage.addView(drawer, MATCH, MATCH)
@@ -567,6 +653,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         })
         root = GestureRoot(this, this)
         root.addView(stage, MATCH, MATCH)
+        root.addView(folderLayer, MATCH, MATCH)
 
         overlay = LaunchOverlay(this).apply {
             visibility = View.GONE
@@ -586,9 +673,11 @@ class MainActivity : Activity(), GestureRoot.Host {
         setContentView(root)
         setProgress(0f)
         applyClock()
-        dragHelper(homeAdapter, homeSlots, homeGrid, homeGuide).attachToRecyclerView(homeGrid)
-        dragHelper(dockAdapter, dockSlots, dock, null).attachToRecyclerView(dock)
+        dragHelper(homeAdapter, homeSlots, homeGrid, homeGuide, true).attachToRecyclerView(homeGrid)
+        dragHelper(dockAdapter, dockSlots, dock, null, false).attachToRecyclerView(dock)
         restoreWidgets()
+
+        registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
 
         showCachedApps()
         loadApps()
@@ -639,12 +728,114 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- drag and drop (iPhone jaisa fixed grid) ----------
+    // ---------- blur helpers ----------
+    @TargetApi(31)
+    private fun blurEffect(r: Float): RenderEffect =
+        RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
+
+    /** Drawer ke progress ke saath home icons blur (khulte waqt badhta, band hote waqt fade). */
+    private fun applyHomeBlur(p: Float) {
+        if (Build.VERSION.SDK_INT < 31) return
+        val step = if (!fxBlur) 0 else (p.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
+        if (step == lastHomeBlur) return
+        lastHomeBlur = step
+        home.setRenderEffect(if (step == 0) null else blurEffect(dp(18) * step / 12f))
+    }
+
+    /** Folder khulne par poori stage (home + drawer) blur. */
+    private fun applyStageBlur(f: Float) {
+        if (Build.VERSION.SDK_INT < 31) return
+        val step = if (!fxBlur) 0 else (f.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
+        if (step == lastStageBlur) return
+        lastStageBlur = step
+        stage.setRenderEffect(if (step == 0) null else blurEffect(dp(20) * step / 12f))
+    }
+
+    // ---------- unlock intro ----------
+    private fun runIntroIfNeeded() {
+        if (!introPending) return
+        if (progress > 0.01f || pendingReturn || folderOpen) return
+        introPending = false
+        if (!fxIntro) return
+        window.decorView.post { playIntro() }
+    }
+
+    /** Har icon alag angle se aata hai aur spring jaisi overshoot ke saath apni jagah par set hota hai. */
+    private fun playIntro() {
+        val views = ArrayList<View>()
+        for (rv in listOf(homeGrid, dock)) {
+            for (i in 0 until rv.childCount) views.add(rv.getChildAt(i))
+        }
+        val dist = dp(140).toFloat()
+        views.forEachIndexed { i, v ->
+            val rad = Math.toRadians(INTRO_ANGLES[i % INTRO_ANGLES.size].toDouble())
+            v.animate().cancel()
+            v.translationX = (cos(rad) * dist).toFloat()
+            v.translationY = (sin(rad) * dist).toFloat()
+            v.alpha = 0f
+            v.scaleX = 0.5f
+            v.scaleY = 0.5f
+            v.animate()
+                .translationX(0f)
+                .translationY(0f)
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setStartDelay((i % 8) * 35L)
+                .setDuration(520)
+                .setInterpolator(OvershootInterpolator(1.1f))
+                .start()
+        }
+    }
+
+    // ---------- drag and drop (fixed grid + folder) ----------
+    private fun isFolder(k: String?) = k != null && k.startsWith(FOLDER_PREFIX)
+
+    private fun folderIdOf(k: String) = k.removePrefix(FOLDER_PREFIX)
+
+    private fun childPosAt(rv: RecyclerView, x: Float, y: Float): Int {
+        val loc = IntArray(2)
+        rv.getLocationOnScreen(loc)
+        val child = rv.findChildViewUnder(x - loc[0], y - loc[1]) ?: return RecyclerView.NO_POSITION
+        return rv.getChildAdapterPosition(child)
+    }
+
+    /** Drop par decide: khali cell par move, dusre icon par swap, app+app par folder. */
+    private fun placeAt(slots: MutableList<String?>, from: Int, target: Int, allowFolders: Boolean) {
+        val src = slots[from] ?: return
+        val tgt = slots[target]
+        if (tgt == null) {
+            slots[target] = src
+            slots[from] = null
+            return
+        }
+        if (allowFolders && isFolder(tgt) && !isFolder(src)) {
+            val f = folders[folderIdOf(tgt)]
+            if (f != null && f.keys.size < MAX_FOLDER) {
+                f.keys.add(src)
+                slots[from] = null
+            } else {
+                Collections.swap(slots, from, target)
+            }
+            return
+        }
+        if (allowFolders && !isFolder(src) && !isFolder(tgt)) {
+            val id = System.currentTimeMillis().toString()
+            folders[id] = Folder("Folder", mutableListOf(tgt, src))
+            slots[target] = FOLDER_PREFIX + id
+            slots[from] = null
+            return
+        }
+        if (!allowFolders && (isFolder(src) || isFolder(tgt))) return
+        Collections.swap(slots, from, target)
+    }
+
     private fun dragHelper(
         adapter: AppAdapter,
         slots: MutableList<String?>,
         rv: RecyclerView,
-        guide: GridGuide?
+        guide: GridGuide?,
+        allowFolders: Boolean
     ): ItemTouchHelper {
         val cb = object : ItemTouchHelper.Callback() {
             override fun isLongPressDragEnabled(): Boolean = true
@@ -658,22 +849,13 @@ class MainActivity : Activity(), GestureRoot.Host {
                 )
             }
 
+            /** Drag ke time live swap nahi hota. Sirf drop par decide hota hai. */
             override fun onMove(
                 recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
-            ): Boolean {
-                val from = vh.bindingAdapterPosition
-                val to = target.bindingAdapterPosition
-                if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
-                if (from == to) return false
-                if (from !in slots.indices || to !in slots.indices) return false
-                Collections.swap(slots, from, to)
-                adapter.swap(from, to)
-                return true
-            }
+            ): Boolean = false
 
             override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
-            /** Drag ke time icon ki screen position track karta hai (drop se pehle). */
             override fun onChildDraw(
                 c: Canvas, recyclerView: RecyclerView, vh: RecyclerView.ViewHolder,
                 dX: Float, dY: Float, actionState: Int, isCurrentlyActive: Boolean
@@ -708,16 +890,27 @@ class MainActivity : Activity(), GestureRoot.Host {
                 dragLock = false
                 guide?.visible = false
 
-                val pos = vh.bindingAdapterPosition
-                if (pos != RecyclerView.NO_POSITION && removeZone.visibility == View.VISIBLE &&
-                    inside(removeZone, dropX, dropY) && slots.getOrNull(pos) != null
-                ) {
-                    slots[pos] = null
-                    adapter.clearAt(pos)
-                }
+                // Remove check pehle (patti hide hone se pehle)
+                val removing = removeZone.visibility == View.VISIBLE && inside(removeZone, dropX, dropY)
                 removeZone.visibility = View.GONE
+
+                val from = vh.bindingAdapterPosition
+                if (from != RecyclerView.NO_POSITION && from < slots.size) {
+                    val src = slots[from]
+                    if (src != null) {
+                        if (removing) {
+                            slots[from] = null
+                            if (isFolder(src)) folders.remove(folderIdOf(src))
+                        } else if (inside(rv, dropX, dropY)) {
+                            val target = childPosAt(rv, dropX, dropY)
+                            if (target != RecyclerView.NO_POSITION && target != from && target < slots.size) {
+                                placeAt(slots, from, target, allowFolders)
+                            }
+                        }
+                    }
+                }
                 persist()
-                rv.invalidate()
+                rv.post { refreshHome() }
             }
         }
         return ItemTouchHelper(cb)
@@ -728,6 +921,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         homeAdapter.applyStyle(s)
         dockAdapter.applyStyle(s)
         drawerAdapter.applyStyle(s)
+        folderAdapter.applyStyle(s)
         drawerGapH = s.gapH
         drawerGapV = s.gapV
         drawerList.invalidateItemDecorations()
@@ -746,10 +940,25 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    /** Folders: har line = id TAB naam TAB key1|key2 */
+    private fun loadFolders() {
+        folders.clear()
+        prefs.getString("folders", "")!!.split("\n").filter { it.isNotEmpty() }.forEach { line ->
+            val p = line.split("\t")
+            if (p.size < 3) return@forEach
+            val keys = p[2].split("|").filter { it.isNotEmpty() }.toMutableList()
+            folders[p[0]] = Folder(p[1], keys)
+        }
+    }
+
     private fun persist() {
+        val foldersText = folders.entries.joinToString("\n") {
+            it.key + "\t" + it.value.name + "\t" + it.value.keys.joinToString("|")
+        }
         prefs.edit()
             .putString("home", homeSlots.joinToString("|") { it ?: "" })
             .putString("dock", dockSlots.joinToString("|") { it ?: "" })
+            .putString("folders", foldersText)
             .apply()
     }
 
@@ -833,11 +1042,47 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    /** Sab items ka map: app keys + folder keys (folder ka icon andar ke apps se banta hai). */
+    private fun buildMap(): Map<String, AppItem> {
+        val m = HashMap<String, AppItem>()
+        allApps.forEach { m[it.key] = it }
+        for ((id, f) in folders) {
+            val items = f.keys.mapNotNull { m[it] }
+            m[FOLDER_PREFIX + id] = AppItem(
+                f.name,
+                FOLDER_PREFIX + id,
+                Intent(Intent.ACTION_MAIN),
+                makeFolderIcon(items)
+            )
+        }
+        return m
+    }
+
+    /** 2x2 mini icons wala folder icon. */
+    private fun makeFolderIcon(items: List<AppItem>): Bitmap {
+        val size = dp(96)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC2A2A30.toInt() }
+        c.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), size * 0.22f, size * 0.22f, bgPaint)
+        val pad = size * 0.12f
+        val gap = size * 0.06f
+        val mini = (size - 2 * pad - gap) / 2f
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        items.take(4).forEachIndexed { i, item ->
+            val x = pad + (i % 2) * (mini + gap)
+            val y = pad + (i / 2) * (mini + gap)
+            c.drawBitmap(item.icon, null, RectF(x, y, x + mini, y + mini), p)
+        }
+        return bmp
+    }
+
     private fun refreshHome() {
-        val map = allApps.associateBy { it.key }
+        val map = buildMap()
         homeAdapter.submit(homeSlots.map { k -> k?.let { map[it] } })
         dockAdapter.submit(dockSlots.map { k -> k?.let { map[it] } })
         hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
+        if (folderOpen) refreshFolderPopup()
     }
 
     private fun toBitmap(dr: Drawable, size: Int): Bitmap {
@@ -871,6 +1116,103 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    // ---------- folder open / close ----------
+    private fun openFolder(id: String) {
+        val f = folders[id] ?: return
+        currentFolderId = id
+        folderOpen = true
+        folderTitle.text = f.name
+        refreshFolderPopup()
+        folderLayer.visibility = View.VISIBLE
+        animateFolder(1f)
+    }
+
+    private fun closeFolder() {
+        if (!folderOpen) return
+        folderOpen = false
+        animateFolder(0f)
+    }
+
+    private fun closeFolderInstant() {
+        folderAnim?.cancel()
+        folderOpen = false
+        currentFolderId = null
+        folderF = 0f
+        folderLayer.visibility = View.GONE
+        folderScrim.alpha = 0f
+        folderCard.alpha = 0f
+        folderCard.scaleX = 0.8f
+        folderCard.scaleY = 0.8f
+        applyStageBlur(0f)
+    }
+
+    /** Ek hi animator: scrim, card zoom aur stage blur sab isi se. */
+    private fun animateFolder(target: Float) {
+        folderAnim?.cancel()
+        val a = ValueAnimator.ofFloat(folderF, target)
+        a.duration = if (target > 0f) 340L else 240L
+        a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
+        a.addUpdateListener {
+            val f = it.animatedValue as Float
+            folderF = f
+            val c = f.coerceIn(0f, 1f)
+            folderScrim.alpha = c
+            folderCard.alpha = c
+            val s = 0.8f + 0.2f * f
+            folderCard.scaleX = s
+            folderCard.scaleY = s
+            applyStageBlur(c)
+        }
+        a.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (target == 0f) {
+                    folderLayer.visibility = View.GONE
+                    currentFolderId = null
+                }
+            }
+        })
+        folderAnim = a
+        a.start()
+    }
+
+    private fun refreshFolderPopup() {
+        val id = currentFolderId ?: return
+        val f = folders[id] ?: return
+        folderTitle.text = f.name
+        val map = buildMap()
+        folderAdapter.submit(f.keys.map { map[it] })
+    }
+
+    private fun showFolderItemMenu(item: AppItem) {
+        val id = currentFolderId ?: return
+        val pkg = item.intent.component?.packageName ?: return
+        showSheet(item.label, item.icon, listOf(
+            "Remove from folder" to { removeFromFolder(id, item.key) },
+            "App info" to { openAppInfo(pkg) }
+        ))
+    }
+
+    /** Folder se app nikalna. Khali cell mein wapas rakhta hai. 1 app bache to folder khatam. */
+    private fun removeFromFolder(id: String, key: String) {
+        val f = folders[id] ?: return
+        val free = homeSlots.indexOf(null)
+        if (free < 0) {
+            Toast.makeText(this, "Home screen full hai", Toast.LENGTH_SHORT).show()
+            return
+        }
+        f.keys.remove(key)
+        homeSlots[free] = key
+        if (f.keys.size <= 1) {
+            val slot = homeSlots.indexOf(FOLDER_PREFIX + id)
+            val left = f.keys.firstOrNull()
+            folders.remove(id)
+            if (slot >= 0) homeSlots[slot] = left
+            closeFolderInstant()
+        }
+        persist()
+        refreshHome()
+    }
+
     // ---------- khali jagah long-press (home menu) ----------
     private fun inside(v: View, x: Float, y: Float): Boolean {
         if (v.visibility != View.VISIBLE || v.height == 0) return false
@@ -891,7 +1233,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     override fun onEmptyLongPress(rawX: Float, rawY: Float) {
-        if (progress > 0.01f || pendingReturn) return
+        if (progress > 0.01f || pendingReturn || folderOpen) return
         if (onItem(homeGrid, rawX, rawY) || onItem(dock, rawX, rawY)) return
         if (inside(widgetBox, rawX, rawY)) return
         window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
@@ -1121,7 +1463,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun addTo(slots: MutableList<String?>, key: String, name: String) {
-        if (key in slots) {
+        if (key in slots || folders.values.any { key in it.keys }) {
             Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
             return
         }
@@ -1138,6 +1480,10 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     // ---------- app open animation ----------
     private fun launch(view: View, item: AppItem) {
+        if (item.key.startsWith(FOLDER_PREFIX)) {
+            openFolder(folderIdOf(item.key))
+            return
+        }
         if (pendingReturn) return
         try {
             val s = getSharedPreferences("settings", MODE_PRIVATE)
@@ -1230,9 +1576,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onResume()
         if (pendingReturn) resetLaunch()
         enableHighRefresh()
+        fxBlur = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("fx_blur", true)
+        fxIntro = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("fx_intro", true)
         applyIconStyle()
         applyClock()
         if (!appsLoaded || currentPack() != loadedPack) loadApps()
+        runIntroIfNeeded()
     }
 
     private fun applyDepth(d: Float) {
@@ -1266,10 +1615,10 @@ class MainActivity : Activity(), GestureRoot.Host {
     // ---------- drawer gesture ----------
     /**
      * Home par upar swipe se drawer khulta hai. Drawer khula ho aur list sabse upar ho
-     * to kahin se bhi neeche swipe karne par drawer band hota hai (pehle jaisa).
+     * to kahin se bhi neeche swipe karne par drawer band hota hai.
      */
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
-        if (dragLock) return false
+        if (dragLock || folderOpen) return false
         return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
     }
 
@@ -1320,6 +1669,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         val s = 1f - 0.08f * p
         home.scaleX = s
         home.scaleY = s
+        applyHomeBlur(p)
         val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
         if (drawer.visibility != dv) drawer.visibility = dv
         val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
@@ -1335,7 +1685,9 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (pendingReturn) {
+        if (folderOpen) {
+            closeFolder()
+        } else if (pendingReturn) {
             resetLaunch()
         } else if (searching) {
             setSearchMode(false)
@@ -1362,6 +1714,10 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            unregisterReceiver(userPresentReceiver)
+        } catch (e: Exception) {
+        }
         bg.shutdownNow()
     }
 }
@@ -1402,19 +1758,6 @@ class AppAdapter(
     }
 
     fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
-
-    fun swap(a: Int, b: Int) {
-        if (a !in items.indices || b !in items.indices) return
-        Collections.swap(items, a, b)
-        notifyItemChanged(a)
-        notifyItemChanged(b)
-    }
-
-    fun clearAt(pos: Int) {
-        if (pos !in items.indices) return
-        items[pos] = null
-        notifyItemChanged(pos)
-    }
 
     class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) :
         RecyclerView.ViewHolder(root)
