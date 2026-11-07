@@ -194,7 +194,7 @@ private class NoEdge(ctx: Context) : EdgeEffect(ctx) {
     override fun isFinished(): Boolean = true
     override fun finish() {}
     override fun onPull(deltaDistance: Float) {}
-    override fun onPull(deltaDistance: Float, displacement: Float): Float = 0f
+    override fun onPull(deltaDistance: Float, displacement: Float) {}
     override fun onRelease() {}
     override fun onAbsorb(velocity: Int) {}
     override fun draw(canvas: Canvas): Boolean = false
