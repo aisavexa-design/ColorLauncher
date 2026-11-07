@@ -188,7 +188,7 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     }
 }
 
-/** Overscroll ke liye no-op edge: bottom par koi stretch nahi hoga. */
+/** Top edge ke liye no-op: upar khinchne par koi stretch nahi hoga. */
 private class NoEdge(ctx: Context) : EdgeEffect(ctx) {
     override fun setSize(width: Int, height: Int) {}
     override fun isFinished(): Boolean = true
@@ -345,6 +345,13 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var drawerGapH = 8
     private var drawerGapV = 12
 
+    /** Drag ke time icon ke center ki screen position (remove check ke liye). */
+    private var dropX = 0f
+    private var dropY = 0f
+    /** Drag shuru hone par cell ki screen position. */
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+
     /** Fixed slots: null ka matlab khali cell. */
     private val homeSlots = MutableList<String?>(HOME_SLOTS) { null }
     private val dockSlots = MutableList<String?>(DOCK_SLOTS) { null }
@@ -480,11 +487,11 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            // Sirf top edge par stretch (neeche khinchne par). Bottom edge par koi effect nahi.
+            // Rubber effect sirf bottom edge par (neeche wala). Top par koi effect nahi.
             overScrollMode = View.OVER_SCROLL_ALWAYS
             edgeEffectFactory = object : RecyclerView.EdgeEffectFactory() {
                 override fun createEdgeEffect(view: RecyclerView, direction: Int): EdgeEffect =
-                    if (direction == RecyclerView.EdgeEffectFactory.DIRECTION_TOP) EdgeEffect(view.context)
+                    if (direction == RecyclerView.EdgeEffectFactory.DIRECTION_BOTTOM) EdgeEffect(view.context)
                     else NoEdge(view.context)
             }
             isVerticalFadingEdgeEnabled = true
@@ -647,7 +654,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             override fun isItemViewSwipeEnabled(): Boolean = false
 
             override fun getMovementFlags(recycler: RecyclerView, vh: RecyclerView.ViewHolder): Int {
-                // Khali cell ko drag nahi kar sakte
                 if (adapter.itemAt(vh.bindingAdapterPosition) == null) return 0
                 return makeMovementFlags(
                     ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
@@ -663,7 +669,6 @@ class MainActivity : Activity(), GestureRoot.Host {
                 if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
                 if (from == to) return false
                 if (from !in slots.indices || to !in slots.indices) return false
-                // Icon aur khali cell (ya dusra icon) dono swap hote hain, jaise iPhone mein
                 Collections.swap(slots, from, to)
                 adapter.swap(from, to)
                 return true
@@ -671,13 +676,31 @@ class MainActivity : Activity(), GestureRoot.Host {
 
             override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
+            /** Drag ke time icon ki screen position track karta hai (drop se pehle). */
+            override fun onChildDraw(
+                c: Canvas, recyclerView: RecyclerView, vh: RecyclerView.ViewHolder,
+                dX: Float, dY: Float, actionState: Int, isCurrentlyActive: Boolean
+            ) {
+                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                    dropX = dragStartX + dX + vh.itemView.width / 2f
+                    dropY = dragStartY + dY + vh.itemView.height / 2f
+                }
+                super.onChildDraw(c, recyclerView, vh, dX, dY, actionState, isCurrentlyActive)
+            }
+
             override fun onSelectedChanged(vh: RecyclerView.ViewHolder?, actionState: Int) {
                 super.onSelectedChanged(vh, actionState)
-                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && vh != null) {
                     dragLock = true
                     guide?.visible = true
                     removeZone.visibility = View.VISIBLE
-                    vh?.itemView?.alpha = 0.7f
+                    vh.itemView.alpha = 0.7f
+                    val loc = IntArray(2)
+                    vh.itemView.getLocationOnScreen(loc)
+                    dragStartX = loc[0].toFloat()
+                    dragStartY = loc[1].toFloat()
+                    dropX = dragStartX + vh.itemView.width / 2f
+                    dropY = dragStartY + vh.itemView.height / 2f
                     rv.invalidate()
                 }
             }
@@ -688,21 +711,17 @@ class MainActivity : Activity(), GestureRoot.Host {
                 dragLock = false
                 guide?.visible = false
 
-                var removed = false
                 val pos = vh.bindingAdapterPosition
-                if (pos != RecyclerView.NO_POSITION && removeZone.visibility == View.VISIBLE) {
-                    val loc = IntArray(2)
-                    vh.itemView.getLocationOnScreen(loc)
-                    val cx = loc[0] + vh.itemView.width / 2f
-                    val cy = loc[1] + vh.itemView.height / 2f
-                    if (inside(removeZone, cx, cy) && slots[pos] != null) {
-                        slots[pos] = null
-                        removed = true
-                    }
+                // Drop position remove zone par thi to slot khali karo
+                if (pos != RecyclerView.NO_POSITION && removeZone.visibility == View.VISIBLE &&
+                    inside(removeZone, dropX, dropY) && slots.getOrNull(pos) != null
+                ) {
+                    slots[pos] = null
+                    adapter.clearAt(pos)
                 }
                 removeZone.visibility = View.GONE
                 persist()
-                if (removed) refreshHome() else rv.invalidate()
+                rv.invalidate()
             }
         }
         return ItemTouchHelper(cb)
@@ -1254,8 +1273,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     // ---------- drawer gesture ----------
     /**
      * Home par upar swipe se drawer khulta hai. Drawer khula ho to sirf header
-     * (title wali patti) par neeche swipe se band hota hai, taaki list ka
-     * top overscroll (rubber) band karne mein na aaye.
+     * (All apps wali patti) par neeche swipe se band hota hai.
      */
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock) return false
@@ -1398,12 +1416,19 @@ class AppAdapter(
 
     fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
 
-    /** Drag ke time do cells ka content badalta hai. Puri list reset nahi hoti. */
+    /** Drag ke time do cells ka content badalta hai. */
     fun swap(a: Int, b: Int) {
         if (a !in items.indices || b !in items.indices) return
         Collections.swap(items, a, b)
         notifyItemChanged(a)
         notifyItemChanged(b)
+    }
+
+    /** Remove ke baad cell khali dikhane ke liye. */
+    fun clearAt(pos: Int) {
+        if (pos !in items.indices) return
+        items[pos] = null
+        notifyItemChanged(pos)
     }
 
     class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) :
@@ -1450,7 +1475,6 @@ class AppAdapter(
 
         val item = items.getOrNull(position)
         if (item == null) {
-            // Khali cell: kuch nahi dikhana
             h.icon.setImageDrawable(null)
             h.icon.visibility = View.INVISIBLE
             h.label.visibility = View.GONE
