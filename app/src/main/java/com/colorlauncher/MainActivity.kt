@@ -60,7 +60,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
-import androidx.dynamicanimation.animation.DynamicAnimation
 import androidx.dynamicanimation.animation.FloatValueHolder
 import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
@@ -72,7 +71,6 @@ import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.sign
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -202,10 +200,7 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     }
 }
 
-/**
- * Sabse upar wali touch layer. Drawer swipe, khali jagah par long-press (home menu)
- * dono yahin handle hote hain, child views (icons, widgets) ke touch se pehle.
- */
+/** Drawer swipe (up/down) aur khali jagah par long-press (home menu). */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
@@ -338,8 +333,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var progress = 0f
     private var dragBase = 0f
     private var anim: SpringAnimation? = null
-    private var listSpring: SpringAnimation? = null
-    private var overscrollMode = false
     private var pendingReturn = false
     private var pivX = 0f
     private var pivY = 0f
@@ -424,7 +417,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             orientation = LinearLayout.VERTICAL
         }
         hint = TextView(this).apply {
-            text = "Swipe up for apps. Long-press an app to add it here."
+            text = "Long-press an app to add it here."
             textSize = 13f
             setTextColor(0xB3FFFFFF.toInt())
             gravity = Gravity.CENTER
@@ -469,7 +462,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            // Overscroll ab hum khud translation se dikhate hain (EdgeEffect nahi)
             overScrollMode = View.OVER_SCROLL_NEVER
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
@@ -603,60 +595,62 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- drag and drop ----------
-    /** Drag app ki key se order badalta hai, taaki drop ke baad icon wahin rahe. */
+    // ---------- drag and drop (sirf long-press se) ----------
     private fun dragHelper(
         adapter: AppAdapter,
         keys: MutableList<String>,
         rv: RecyclerView,
         guide: GridGuide?
-    ) = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
-        ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
-        ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
-    ) {
-        override fun onMove(
-            recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
-        ): Boolean {
-            val fromPos = vh.bindingAdapterPosition
-            val toPos = target.bindingAdapterPosition
-            if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
-            val fromKey = adapter.keyAt(fromPos) ?: return false
-            val toKey = adapter.keyAt(toPos) ?: return false
-            adapter.move(fromPos, toPos)
-            val fromIdx = keys.indexOf(fromKey)
-            val toIdx = keys.indexOf(toKey)
-            if (fromIdx >= 0 && toIdx >= 0) {
-                keys.removeAt(fromIdx)
-                keys.add(toIdx, fromKey)
+    ): ItemTouchHelper {
+        val cb = object : ItemTouchHelper.SimpleCallback(
+            ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
+            0
+        ) {
+            override fun isLongPressDragEnabled(): Boolean = true
+            override fun isItemViewSwipeEnabled(): Boolean = false
+
+            override fun onMove(
+                recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
+            ): Boolean {
+                val fromPos = vh.bindingAdapterPosition
+                val toPos = target.bindingAdapterPosition
+                if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
+                if (fromPos == toPos) return false
+                val fromKey = adapter.keyAt(fromPos) ?: return false
+                val toKey = adapter.keyAt(toPos) ?: return false
+                adapter.move(fromPos, toPos)
+                val fromIdx = keys.indexOf(fromKey)
+                val toIdx = keys.indexOf(toKey)
+                if (fromIdx >= 0 && toIdx >= 0) {
+                    keys.removeAt(fromIdx)
+                    keys.add(toIdx, fromKey)
+                }
+                return true
             }
-            return true
-        }
 
-        override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {
-            val key = adapter.keyAt(vh.bindingAdapterPosition) ?: return
-            keys.remove(key)
-            save()
-        }
+            override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
-        override fun onSelectedChanged(vh: RecyclerView.ViewHolder?, actionState: Int) {
-            super.onSelectedChanged(vh, actionState)
-            if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
-                dragLock = true
-                guide?.visible = true
-                vh?.itemView?.alpha = 0.7f
+            override fun onSelectedChanged(vh: RecyclerView.ViewHolder?, actionState: Int) {
+                super.onSelectedChanged(vh, actionState)
+                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                    dragLock = true
+                    guide?.visible = true
+                    vh?.itemView?.alpha = 0.7f
+                    rv.invalidate()
+                }
+            }
+
+            override fun clearView(recycler: RecyclerView, vh: RecyclerView.ViewHolder) {
+                super.clearView(recycler, vh)
+                vh.itemView.alpha = 1f
+                dragLock = false
+                guide?.visible = false
                 rv.invalidate()
+                persist()
             }
         }
-
-        override fun clearView(recycler: RecyclerView, vh: RecyclerView.ViewHolder) {
-            super.clearView(recycler, vh)
-            vh.itemView.alpha = 1f
-            dragLock = false
-            guide?.visible = false
-            rv.invalidate()
-            save()
-        }
-    })
+        return ItemTouchHelper(cb)
+    }
 
     private fun applyIconStyle() {
         val s = readIconStyle(this)
@@ -684,6 +678,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             .apply()
     }
 
+    /** Sirf list badalne par (add/remove) refresh. Drag ke time nahi. */
     private fun save() {
         persist()
         refreshHome()
@@ -811,7 +806,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     // ---------- khali jagah long-press (home menu) ----------
-    /** Screen par point (screen coordinates) view ke andar hai ya nahi. */
     private fun inside(v: View, x: Float, y: Float): Boolean {
         if (v.visibility != View.VISIBLE || v.height == 0) return false
         val loc = IntArray(2)
@@ -819,7 +813,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         return x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height
     }
 
-    /** Point par koi app icon hai ya nahi. */
     private fun onItem(rv: RecyclerView, x: Float, y: Float): Boolean {
         if (!inside(rv, x, y)) return false
         val loc = IntArray(2)
@@ -1198,57 +1191,23 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
-    // ---------- drawer gesture + overscroll ----------
+    // ---------- drawer gesture (sirf home se upar swipe) ----------
     override fun canStartDrag(dy: Float): Boolean {
         if (dragLock) return false
-        if (progress > 0.5f) {
-            // Drawer khula hai: list ke edge par hi overscroll shuru hoga
-            if (dy > 0 && !drawerList.canScrollVertically(-1)) return true
-            if (dy < 0 && !drawerList.canScrollVertically(1)) return true
-            return false
-        }
-        return dy < 0
+        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
     }
 
     override fun onDragStart() {
         anim?.cancel()
-        listSpring?.cancel()
         dragBase = progress
-        overscrollMode = progress > 0.5f
         setLayers(true)
     }
 
     override fun onDrag(dy: Float) {
-        if (overscrollMode) {
-            drawerList.translationY = rubber(dy)
-            return
-        }
         setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
     }
 
-    /** Khinchne par resistance: shuru mein 1:1, phir dheere-dheere kam. */
-    private fun rubber(dy: Float): Float {
-        val h = maxOf(1f, root.height * 0.6f)
-        return sign(dy) * h * (1f - 1f / (abs(dy) / h + 1f))
-    }
-
-    private fun springListBack() {
-        listSpring?.cancel()
-        listSpring = SpringAnimation(drawerList, DynamicAnimation.TRANSLATION_Y, 0f).apply {
-            spring = SpringForce(0f).setStiffness(420f).setDampingRatio(0.72f)
-            start()
-        }
-    }
-
     override fun onDragEnd(vy: Float) {
-        if (overscrollMode) {
-            overscrollMode = false
-            val h = root.height.toFloat()
-            // Neeche (top par) bahut zyada khincha to drawer band
-            if (drawerList.translationY > h * 0.2f) animateProgress(0f, 0f)
-            springListBack()
-            return
-        }
         val v = -vy / dist()
         val open = when {
             v > 0.6f -> true
@@ -1368,6 +1327,7 @@ class AppAdapter(
     fun keyAt(pos: Int): String? = items.getOrNull(pos)?.key
 
     fun move(from: Int, to: Int) {
+        if (from !in items.indices || to !in items.indices) return
         items.add(to, items.removeAt(from))
         notifyItemMoved(from, to)
     }
@@ -1403,7 +1363,7 @@ class AppAdapter(
     }
 
     override fun onBindViewHolder(h: VH, position: Int) {
-        val item = items[position]
+        val item = items.getOrNull(position) ?: return
         val d = h.root.resources.displayMetrics.density
 
         val px = (style.sizeDp * d).toInt()
