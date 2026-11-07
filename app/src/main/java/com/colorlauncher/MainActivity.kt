@@ -20,7 +20,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
-import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -41,7 +40,6 @@ import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.Window
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -348,7 +346,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     /** Drag ke time icon ke center ki screen position (remove check ke liye). */
     private var dropX = 0f
     private var dropY = 0f
-    /** Drag shuru hone par cell ki screen position. */
     private var dragStartX = 0f
     private var dragStartY = 0f
 
@@ -487,7 +484,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            // Rubber effect sirf bottom edge par (neeche wala). Top par koi effect nahi.
+            // Rubber effect sirf bottom edge par. Top par koi effect nahi.
             overScrollMode = View.OVER_SCROLL_ALWAYS
             edgeEffectFactory = object : RecyclerView.EdgeEffectFactory() {
                 override fun createEdgeEffect(view: RecyclerView, direction: Int): EdgeEffect =
@@ -712,7 +709,6 @@ class MainActivity : Activity(), GestureRoot.Host {
                 guide?.visible = false
 
                 val pos = vh.bindingAdapterPosition
-                // Drop position remove zone par thi to slot khali karo
                 if (pos != RecyclerView.NO_POSITION && removeZone.visibility == View.VISIBLE &&
                     inside(removeZone, dropX, dropY) && slots.getOrNull(pos) != null
                 ) {
@@ -743,7 +739,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         date.visibility = if (on) View.VISIBLE else View.GONE
     }
 
-    /** Saved slots ko fixed size list mein load karta hai (khali cell null rahta hai). */
     private fun loadSlots(name: String, target: MutableList<String?>) {
         val parts = prefs.getString(name, "")!!.split("|")
         for (i in target.indices) {
@@ -884,7 +879,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         return x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height
     }
 
-    /** Point par app icon hai ya nahi (khali cell ko icon nahi maana jayega). */
     private fun onItem(rv: RecyclerView, x: Float, y: Float): Boolean {
         if (!inside(rv, x, y)) return false
         val loc = IntArray(2)
@@ -1126,7 +1120,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         d.show()
     }
 
-    /** Pehla khali cell dhoondh kar app wahan rakhta hai. */
     private fun addTo(slots: MutableList<String?>, key: String, name: String) {
         if (key in slots) {
             Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
@@ -1272,18 +1265,12 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     // ---------- drawer gesture ----------
     /**
-     * Home par upar swipe se drawer khulta hai. Drawer khula ho to sirf header
-     * (All apps wali patti) par neeche swipe se band hota hai.
+     * Home par upar swipe se drawer khulta hai. Drawer khula ho aur list sabse upar ho
+     * to kahin se bhi neeche swipe karne par drawer band hota hai (pehle jaisa).
      */
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock) return false
-        if (progress > 0.5f) {
-            if (dy <= 0) return false
-            val loc = IntArray(2)
-            header.getLocationOnScreen(loc)
-            return rawStartY <= loc[1] + header.height
-        }
-        return dy < 0
+        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
     }
 
     override fun onDragStart() {
@@ -1416,7 +1403,6 @@ class AppAdapter(
 
     fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
 
-    /** Drag ke time do cells ka content badalta hai. */
     fun swap(a: Int, b: Int) {
         if (a !in items.indices || b !in items.indices) return
         Collections.swap(items, a, b)
@@ -1424,7 +1410,6 @@ class AppAdapter(
         notifyItemChanged(b)
     }
 
-    /** Remove ke baad cell khali dikhane ke liye. */
     fun clearAt(pos: Int) {
         if (pos !in items.indices) return
         items[pos] = null
