@@ -25,12 +25,22 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Decode keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: launchersam
+          KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: LauncherSam-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: LauncherSam-release
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
