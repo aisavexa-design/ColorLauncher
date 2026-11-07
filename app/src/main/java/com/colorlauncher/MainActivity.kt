@@ -48,6 +48,7 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
+import android.widget.EdgeEffect
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -68,6 +69,7 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Collections
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.max
@@ -186,6 +188,18 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     }
 }
 
+/** Overscroll ke liye no-op edge: bottom par koi stretch nahi hoga. */
+private class NoEdge(ctx: Context) : EdgeEffect(ctx) {
+    override fun setSize(width: Int, height: Int) {}
+    override fun isFinished(): Boolean = true
+    override fun finish() {}
+    override fun onPull(deltaDistance: Float) {}
+    override fun onPull(deltaDistance: Float, displacement: Float): Float = 0f
+    override fun onRelease() {}
+    override fun onAbsorb(velocity: Int) {}
+    override fun draw(canvas: Canvas): Boolean = false
+}
+
 /** RecyclerView jiska top/bottom fade scroll ke saath smoothly badhta hai. */
 class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     override fun getTopFadingEdgeStrength(): Float {
@@ -200,11 +214,11 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     }
 }
 
-/** Drawer swipe (up/down) aur khali jagah par long-press (home menu). */
+/** Sabse upar wali touch layer: drawer swipe aur khali jagah par long-press (home menu). */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
-        fun canStartDrag(dy: Float): Boolean
+        fun canStartDrag(dy: Float, rawStartY: Float): Boolean
         fun onDragStart()
         fun onDrag(dy: Float)
         fun onDragEnd(vy: Float)
@@ -250,7 +264,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 val dx = e.x - downX
                 if (!dragging) {
                     if (abs(dy) > slop || abs(dx) > slop) cancelLong()
-                    if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy)) {
+                    if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
                         cancelLong()
                         dragging = true
                         host.onDragStart()
@@ -290,6 +304,9 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 class MainActivity : Activity(), GestureRoot.Host {
 
     companion object {
+        private const val HOME_SLOTS = 24
+        private const val DOCK_SLOTS = 4
+        private const val COLS = 4
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
@@ -311,6 +328,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var header: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var searchBox: EditText
+    private lateinit var removeZone: TextView
     private lateinit var homeAdapter: AppAdapter
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
@@ -326,8 +344,10 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var dragLock = false
     private var drawerGapH = 8
     private var drawerGapV = 12
-    private val homeKeys = mutableListOf<String>()
-    private val dockKeys = mutableListOf<String>()
+
+    /** Fixed slots: null ka matlab khali cell. */
+    private val homeSlots = MutableList<String?>(HOME_SLOTS) { null }
+    private val dockSlots = MutableList<String?>(DOCK_SLOTS) { null }
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
 
     private var progress = 0f
@@ -348,7 +368,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    /** Home grid par drag ke time dashed grid cells dikhata hai. */
+    /** Home grid par drag ke time dashed cells dikhata hai. */
     private inner class GridGuide : RecyclerView.ItemDecoration() {
         var visible = false
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -361,18 +381,16 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         override fun onDrawOver(c: Canvas, parent: RecyclerView, state: RecyclerView.State) {
             if (!visible) return
-            val lm = parent.layoutManager as? GridLayoutManager ?: return
-            val cols = lm.spanCount
             val child = parent.getChildAt(0) ?: return
             val rowH = child.height.toFloat()
             if (rowH <= 0f) return
             val left = parent.paddingLeft.toFloat()
             val right = (parent.width - parent.paddingRight).toFloat()
-            val cw = (right - left) / cols
-            val rows = ((parent.height - parent.paddingTop) / rowH).toInt() + 1
+            val cw = (right - left) / COLS
+            val rows = state.itemCount / COLS
             val inset = dp(4).toFloat()
             for (row in 0 until rows) {
-                for (col in 0 until cols) {
+                for (col in 0 until COLS) {
                     val top = parent.paddingTop + row * rowH
                     r.set(
                         left + col * cw + inset,
@@ -391,8 +409,8 @@ class MainActivity : Activity(), GestureRoot.Host {
         setupWindow()
         enableHighRefresh()
 
-        homeKeys.addAll(loadKeys("home"))
-        dockKeys.addAll(loadKeys("dock"))
+        loadSlots("home", homeSlots)
+        loadSlots("dock", dockSlots)
 
         homeAdapter = AppAdapter(true, { v, i -> launch(v, i) }, null)
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
@@ -424,7 +442,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setPadding(dp(24), dp(32), dp(24), 0)
         }
         homeGrid = RecyclerView(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 4)
+            layoutManager = GridLayoutManager(this@MainActivity, COLS)
             adapter = homeAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
@@ -433,7 +451,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         homeGrid.addItemDecoration(homeGuide)
         dock = RecyclerView(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 1)
+            layoutManager = GridLayoutManager(this@MainActivity, DOCK_SLOTS)
             adapter = dockAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
@@ -456,13 +474,19 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
 
         drawerList = FadeRecycler(this).apply {
-            layoutManager = GridLayoutManager(this@MainActivity, 4)
+            layoutManager = GridLayoutManager(this@MainActivity, COLS)
             adapter = drawerAdapter
             setHasFixedSize(true)
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            overScrollMode = View.OVER_SCROLL_NEVER
+            // Sirf top edge par stretch (neeche khinchne par). Bottom edge par koi effect nahi.
+            overScrollMode = View.OVER_SCROLL_ALWAYS
+            edgeEffectFactory = object : RecyclerView.EdgeEffectFactory() {
+                override fun createEdgeEffect(view: RecyclerView, direction: Int): EdgeEffect =
+                    if (direction == RecyclerView.EdgeEffectFactory.DIRECTION_TOP) EdgeEffect(view.context)
+                    else NoEdge(view.context)
+            }
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
             setPadding(dp(8), dp(64), dp(8), 0)
@@ -476,8 +500,8 @@ class MainActivity : Activity(), GestureRoot.Host {
                 val h = dp(drawerGapH) / 2
                 val v = dp(drawerGapV) / 2
                 outRect.set(h, v, h, v)
-                val rem = n % 4
-                val lastRowStart = n - (if (rem == 0) 4 else rem)
+                val rem = n % COLS
+                val lastRowStart = n - (if (rem == 0) COLS else rem)
                 if (pos >= lastRowStart) outRect.bottom += listBottomGap
             }
         })
@@ -519,9 +543,24 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         drawer.addView(header, FrameLayout.LayoutParams(MATCH, dp(56), Gravity.TOP))
 
+        removeZone = TextView(this).apply {
+            text = "Drop here to remove"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(0xCCE5484D.toInt())
+            }
+            visibility = View.GONE
+        }
+
         stage = FrameLayout(this)
         stage.addView(home, MATCH, MATCH)
         stage.addView(drawer, MATCH, MATCH)
+        stage.addView(removeZone, FrameLayout.LayoutParams(MATCH, dp(56), Gravity.TOP).apply {
+            setMargins(dp(16), dp(8), dp(16), 0)
+        })
         root = GestureRoot(this, this)
         root.addView(stage, MATCH, MATCH)
 
@@ -543,8 +582,8 @@ class MainActivity : Activity(), GestureRoot.Host {
         setContentView(root)
         setProgress(0f)
         applyClock()
-        dragHelper(homeAdapter, homeKeys, homeGrid, homeGuide).attachToRecyclerView(homeGrid)
-        dragHelper(dockAdapter, dockKeys, dock, null).attachToRecyclerView(dock)
+        dragHelper(homeAdapter, homeSlots, homeGrid, homeGuide).attachToRecyclerView(homeGrid)
+        dragHelper(dockAdapter, dockSlots, dock, null).attachToRecyclerView(dock)
         restoreWidgets()
 
         showCachedApps()
@@ -571,6 +610,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         home.setPadding(0, top + dp(24), 0, bottom)
         (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
         header.requestLayout()
+        (removeZone.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
         drawerList.setPadding(dp(8), top + dp(64), dp(8), ime)
         listBottomGap = bottom + dp(24)
         drawerList.invalidateItemDecorations()
@@ -595,36 +635,37 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- drag and drop (sirf long-press se) ----------
+    // ---------- drag and drop (iPhone jaisa fixed grid) ----------
     private fun dragHelper(
         adapter: AppAdapter,
-        keys: MutableList<String>,
+        slots: MutableList<String?>,
         rv: RecyclerView,
         guide: GridGuide?
     ): ItemTouchHelper {
-        val cb = object : ItemTouchHelper.SimpleCallback(
-            ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
-            0
-        ) {
+        val cb = object : ItemTouchHelper.Callback() {
             override fun isLongPressDragEnabled(): Boolean = true
             override fun isItemViewSwipeEnabled(): Boolean = false
+
+            override fun getMovementFlags(recycler: RecyclerView, vh: RecyclerView.ViewHolder): Int {
+                // Khali cell ko drag nahi kar sakte
+                if (adapter.itemAt(vh.bindingAdapterPosition) == null) return 0
+                return makeMovementFlags(
+                    ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
+                    0
+                )
+            }
 
             override fun onMove(
                 recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
             ): Boolean {
-                val fromPos = vh.bindingAdapterPosition
-                val toPos = target.bindingAdapterPosition
-                if (fromPos == RecyclerView.NO_POSITION || toPos == RecyclerView.NO_POSITION) return false
-                if (fromPos == toPos) return false
-                val fromKey = adapter.keyAt(fromPos) ?: return false
-                val toKey = adapter.keyAt(toPos) ?: return false
-                adapter.move(fromPos, toPos)
-                val fromIdx = keys.indexOf(fromKey)
-                val toIdx = keys.indexOf(toKey)
-                if (fromIdx >= 0 && toIdx >= 0) {
-                    keys.removeAt(fromIdx)
-                    keys.add(toIdx, fromKey)
-                }
+                val from = vh.bindingAdapterPosition
+                val to = target.bindingAdapterPosition
+                if (from == RecyclerView.NO_POSITION || to == RecyclerView.NO_POSITION) return false
+                if (from == to) return false
+                if (from !in slots.indices || to !in slots.indices) return false
+                // Icon aur khali cell (ya dusra icon) dono swap hote hain, jaise iPhone mein
+                Collections.swap(slots, from, to)
+                adapter.swap(from, to)
                 return true
             }
 
@@ -635,6 +676,7 @@ class MainActivity : Activity(), GestureRoot.Host {
                 if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
                     dragLock = true
                     guide?.visible = true
+                    removeZone.visibility = View.VISIBLE
                     vh?.itemView?.alpha = 0.7f
                     rv.invalidate()
                 }
@@ -645,8 +687,22 @@ class MainActivity : Activity(), GestureRoot.Host {
                 vh.itemView.alpha = 1f
                 dragLock = false
                 guide?.visible = false
-                rv.invalidate()
+
+                var removed = false
+                val pos = vh.bindingAdapterPosition
+                if (pos != RecyclerView.NO_POSITION && removeZone.visibility == View.VISIBLE) {
+                    val loc = IntArray(2)
+                    vh.itemView.getLocationOnScreen(loc)
+                    val cx = loc[0] + vh.itemView.width / 2f
+                    val cy = loc[1] + vh.itemView.height / 2f
+                    if (inside(removeZone, cx, cy) && slots[pos] != null) {
+                        slots[pos] = null
+                        removed = true
+                    }
+                }
+                removeZone.visibility = View.GONE
                 persist()
+                if (removed) refreshHome() else rv.invalidate()
             }
         }
         return ItemTouchHelper(cb)
@@ -668,20 +724,19 @@ class MainActivity : Activity(), GestureRoot.Host {
         date.visibility = if (on) View.VISIBLE else View.GONE
     }
 
-    private fun loadKeys(name: String): List<String> =
-        prefs.getString(name, "")!!.split("|").filter { it.isNotEmpty() }
+    /** Saved slots ko fixed size list mein load karta hai (khali cell null rahta hai). */
+    private fun loadSlots(name: String, target: MutableList<String?>) {
+        val parts = prefs.getString(name, "")!!.split("|")
+        for (i in target.indices) {
+            target[i] = parts.getOrNull(i)?.takeIf { it.isNotEmpty() }
+        }
+    }
 
     private fun persist() {
         prefs.edit()
-            .putString("home", homeKeys.joinToString("|"))
-            .putString("dock", dockKeys.joinToString("|"))
+            .putString("home", homeSlots.joinToString("|") { it ?: "" })
+            .putString("dock", dockSlots.joinToString("|") { it ?: "" })
             .apply()
-    }
-
-    /** Sirf list badalne par (add/remove) refresh. Drag ke time nahi. */
-    private fun save() {
-        persist()
-        refreshHome()
     }
 
     private fun currentPack(): String =
@@ -766,12 +821,9 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun refreshHome() {
         val map = allApps.associateBy { it.key }
-        homeAdapter.submit(homeKeys.mapNotNull { map[it] })
-        val dockItems = dockKeys.mapNotNull { map[it] }
-        dockAdapter.submit(dockItems)
-        (dock.layoutManager as GridLayoutManager).spanCount = maxOf(1, dockItems.size)
-        dock.visibility = if (dockItems.isEmpty()) View.GONE else View.VISIBLE
-        hint.visibility = if (homeKeys.isEmpty() && dockKeys.isEmpty()) View.VISIBLE else View.GONE
+        homeAdapter.submit(homeSlots.map { k -> k?.let { map[it] } })
+        dockAdapter.submit(dockSlots.map { k -> k?.let { map[it] } })
+        hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
     }
 
     private fun toBitmap(dr: Drawable, size: Int): Bitmap {
@@ -813,11 +865,16 @@ class MainActivity : Activity(), GestureRoot.Host {
         return x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height
     }
 
+    /** Point par app icon hai ya nahi (khali cell ko icon nahi maana jayega). */
     private fun onItem(rv: RecyclerView, x: Float, y: Float): Boolean {
         if (!inside(rv, x, y)) return false
         val loc = IntArray(2)
         rv.getLocationOnScreen(loc)
-        return rv.findChildViewUnder(x - loc[0], y - loc[1]) != null
+        val child = rv.findChildViewUnder(x - loc[0], y - loc[1]) ?: return false
+        val vh = rv.getChildViewHolder(child)
+        val pos = vh.bindingAdapterPosition
+        val adapter = rv.adapter as? AppAdapter ?: return false
+        return pos != RecyclerView.NO_POSITION && adapter.itemAt(pos) != null
     }
 
     override fun onEmptyLongPress(rawX: Float, rawY: Float) {
@@ -953,13 +1010,13 @@ class MainActivity : Activity(), GestureRoot.Host {
         saveWidgetIds()
     }
 
-    // ---------- long-press menu (app icons) ----------
+    // ---------- long-press menu (drawer app icons) ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
         val actions = mutableListOf<Pair<String, () -> Unit>>()
         if (where == "drawer") {
-            actions.add("Add to Home" to { addTo(homeKeys, item.key, Int.MAX_VALUE, "Home") })
-            actions.add("Add to Dock" to { addTo(dockKeys, item.key, 4, "Dock") })
+            actions.add("Add to Home" to { addTo(homeSlots, item.key, "Home") })
+            actions.add("Add to Dock" to { addTo(dockSlots, item.key, "Dock") })
         }
         actions.add("App info" to { openAppInfo(pkg) })
         if (!isSystemApp(pkg)) {
@@ -1050,17 +1107,20 @@ class MainActivity : Activity(), GestureRoot.Host {
         d.show()
     }
 
-    private fun addTo(list: MutableList<String>, key: String, max: Int, name: String) {
-        if (key in list) {
+    /** Pehla khali cell dhoondh kar app wahan rakhta hai. */
+    private fun addTo(slots: MutableList<String?>, key: String, name: String) {
+        if (key in slots) {
             Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
             return
         }
-        if (list.size >= max) {
+        val idx = slots.indexOf(null)
+        if (idx == -1) {
             Toast.makeText(this, "$name is full", Toast.LENGTH_SHORT).show()
             return
         }
-        list.add(key)
-        save()
+        slots[idx] = key
+        persist()
+        refreshHome()
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
@@ -1191,10 +1251,21 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
-    // ---------- drawer gesture (sirf home se upar swipe) ----------
-    override fun canStartDrag(dy: Float): Boolean {
+    // ---------- drawer gesture ----------
+    /**
+     * Home par upar swipe se drawer khulta hai. Drawer khula ho to sirf header
+     * (title wali patti) par neeche swipe se band hota hai, taaki list ka
+     * top overscroll (rubber) band karne mein na aaye.
+     */
+    override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock) return false
-        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+        if (progress > 0.5f) {
+            if (dy <= 0) return false
+            val loc = IntArray(2)
+            header.getLocationOnScreen(loc)
+            return rawStartY <= loc[1] + header.height
+        }
+        return dy < 0
     }
 
     override fun onDragStart() {
@@ -1303,18 +1374,19 @@ fun readIconStyle(ctx: Context): IconStyle {
     )
 }
 
+/** Fixed slots wala adapter. Null item = khali cell. */
 class AppAdapter(
     private val showLabel: Boolean,
     private val onClick: (View, AppItem) -> Unit,
     private val onLong: ((AppItem) -> Unit)?
 ) : RecyclerView.Adapter<AppAdapter.VH>() {
 
-    private var items: MutableList<AppItem> = mutableListOf()
+    private var items: MutableList<AppItem?> = mutableListOf()
     private var style = IconStyle(60, 0, true, 8, 12)
 
     init { setHasStableIds(true) }
 
-    fun submit(list: List<AppItem>) {
+    fun submit(list: List<AppItem?>) {
         items = list.toMutableList()
         notifyDataSetChanged()
     }
@@ -1324,18 +1396,21 @@ class AppAdapter(
         notifyDataSetChanged()
     }
 
-    fun keyAt(pos: Int): String? = items.getOrNull(pos)?.key
+    fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
 
-    fun move(from: Int, to: Int) {
-        if (from !in items.indices || to !in items.indices) return
-        items.add(to, items.removeAt(from))
-        notifyItemMoved(from, to)
+    /** Drag ke time do cells ka content badalta hai. Puri list reset nahi hoti. */
+    fun swap(a: Int, b: Int) {
+        if (a !in items.indices || b !in items.indices) return
+        Collections.swap(items, a, b)
+        notifyItemChanged(a)
+        notifyItemChanged(b)
     }
 
     class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) :
         RecyclerView.ViewHolder(root)
 
-    override fun getItemId(position: Int) = items[position].key.hashCode().toLong()
+    override fun getItemId(position: Int): Long =
+        items.getOrNull(position)?.key?.hashCode()?.toLong() ?: (1_000_000_000L + position)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
         val ctx = parent.context
@@ -1363,9 +1438,7 @@ class AppAdapter(
     }
 
     override fun onBindViewHolder(h: VH, position: Int) {
-        val item = items.getOrNull(position) ?: return
         val d = h.root.resources.displayMetrics.density
-
         val px = (style.sizeDp * d).toInt()
         val lp = h.icon.layoutParams
         if (lp.width != px || lp.height != px) {
@@ -1374,6 +1447,21 @@ class AppAdapter(
             h.icon.layoutParams = lp
         }
         h.icon.shape = style.shape
+
+        val item = items.getOrNull(position)
+        if (item == null) {
+            // Khali cell: kuch nahi dikhana
+            h.icon.setImageDrawable(null)
+            h.icon.visibility = View.INVISIBLE
+            h.label.visibility = View.GONE
+            h.root.setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
+            h.root.setOnClickListener(null)
+            h.root.setOnLongClickListener(null)
+            h.root.setOnTouchListener(null)
+            return
+        }
+
+        h.icon.visibility = View.VISIBLE
         h.icon.setImageBitmap(item.icon)
 
         val showText = showLabel && style.labels
