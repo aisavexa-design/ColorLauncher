@@ -29,6 +29,7 @@ import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -136,7 +137,7 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
         val rect = RectF(0f, 0f, w, h)
         when (shape) {
             1 -> path.addOval(rect, Path.Direction.CW)
-            2 -> path.addRoundRect(rect, w * 0.05f, h * 0.05f, Path.Direction.CW)
+            2 -> path.addRect(rect, Path.Direction.CW)
             else -> path.addRoundRect(rect, w * 0.3f, h * 0.3f, Path.Direction.CW)
         }
         val save = canvas.save()
@@ -316,7 +317,8 @@ class MainActivity : Activity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        /** Unlock intro ke liye alag-alag angles (degree). */
+        /** Cache version: square icons ke liye alag tag. */
+        private const val CACHE_VER = "#sq2"
         private val INTRO_ANGLES = intArrayOf(-135, -60, 210, 60, -165, 120, -30, 150)
     }
 
@@ -366,13 +368,11 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var lastHomeBlur = -1
     private var lastStageBlur = -1
 
-    /** Drag ke time icon ki screen position (remove / folder check ke liye). */
     private var dropX = 0f
     private var dropY = 0f
     private var dragStartX = 0f
     private var dragStartY = 0f
 
-    /** Fixed slots: null ka matlab khali cell. Value app key ya "folder:<id>" ho sakti hai. */
     private val homeSlots = MutableList<String?>(HOME_SLOTS) { null }
     private val dockSlots = MutableList<String?>(DOCK_SLOTS) { null }
     private val folders = LinkedHashMap<String, Folder>()
@@ -394,10 +394,20 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var depth = 0f
     private var launchAnim: ValueAnimator? = null
     private var lastIconBlur = -1
-    private val iconBlurMax by lazy { dp(8) }
     private var iconBlurOn = true
     private var listBottomGap = 0
     private val emphasized = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+
+    /** Blur ke levels ek baar bane aur reuse hote hain (har frame par naya effect nahi). */
+    private val homeBlurFx: Array<RenderEffect?> by lazy {
+        Array(13) { s -> if (s == 0) null else blurEffect(dp(18) * s / 12f) }
+    }
+    private val stageBlurFx: Array<RenderEffect?> by lazy {
+        Array(13) { s -> if (s == 0) null else blurEffect(dp(20) * s / 12f) }
+    }
+    private val iconBlurFx: Array<RenderEffect?> by lazy {
+        Array(9) { s -> if (s == 0) null else blurEffect(dp(8) * s / 8f) }
+    }
 
     private val userPresentReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -410,7 +420,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    /** Home grid par drag ke time dashed cells dikhata hai. */
     private inner class GridGuide : RecyclerView.ItemDecoration() {
         var visible = false
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -523,7 +532,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             setItemViewCacheSize(24)
             itemAnimator = null
             clipToPadding = true
-            // Rubber effect sirf bottom edge par. Top par koi effect nahi.
             overScrollMode = View.OVER_SCROLL_ALWAYS
             edgeEffectFactory = object : RecyclerView.EdgeEffectFactory() {
                 override fun createEdgeEffect(view: RecyclerView, direction: Int): EdgeEffect =
@@ -598,7 +606,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             visibility = View.GONE
         }
 
-        // ---- Folder popup ----
         folderScrim = View(this).apply {
             setBackgroundColor(0x88000000.toInt())
             alpha = 0f
@@ -611,10 +618,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         folderAdapter = AppAdapter(
             true,
-            { v, i ->
-                launch(v, i)
-                closeFolderInstant()
-            },
+            { v, i -> launch(v, i) },
             { showFolderItemMenu(it) }
         )
         folderGrid = RecyclerView(this).apply {
@@ -709,7 +713,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.invalidateItemDecorations()
     }
 
-    /** Display ka sabse tez refresh rate (jaise 120Hz) window ke liye maangta hai. */
     @Suppress("DEPRECATION")
     private fun enableHighRefresh() {
         try {
@@ -728,27 +731,33 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- blur helpers ----------
+    // ---------- blur (pre-built levels, sirf badalne par set) ----------
     @TargetApi(31)
     private fun blurEffect(r: Float): RenderEffect =
         RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
 
-    /** Drawer ke progress ke saath home icons blur (khulte waqt badhta, band hote waqt fade). */
     private fun applyHomeBlur(p: Float) {
         if (Build.VERSION.SDK_INT < 31) return
         val step = if (!fxBlur) 0 else (p.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
         if (step == lastHomeBlur) return
         lastHomeBlur = step
-        home.setRenderEffect(if (step == 0) null else blurEffect(dp(18) * step / 12f))
+        home.setRenderEffect(homeBlurFx[step])
     }
 
-    /** Folder khulne par poori stage (home + drawer) blur. */
     private fun applyStageBlur(f: Float) {
         if (Build.VERSION.SDK_INT < 31) return
         val step = if (!fxBlur) 0 else (f.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
         if (step == lastStageBlur) return
         lastStageBlur = step
-        stage.setRenderEffect(if (step == 0) null else blurEffect(dp(20) * step / 12f))
+        stage.setRenderEffect(stageBlurFx[step])
+    }
+
+    @TargetApi(31)
+    private fun setIconBlur(step: Int) {
+        val fx = iconBlurFx[step]
+        homeGrid.setRenderEffect(fx)
+        dock.setRenderEffect(fx)
+        drawerList.setRenderEffect(fx)
     }
 
     // ---------- unlock intro ----------
@@ -760,33 +769,37 @@ class MainActivity : Activity(), GestureRoot.Host {
         window.decorView.post { playIntro() }
     }
 
-    /** Har icon alag angle se aata hai aur spring jaisi overshoot ke saath apni jagah par set hota hai. */
-    private fun playIntro() {
+        private fun playIntro() {
         val views = ArrayList<View>()
         for (rv in listOf(homeGrid, dock)) {
             for (i in 0 until rv.childCount) views.add(rv.getChildAt(i))
         }
-        val dist = dp(140).toFloat()
-        views.forEachIndexed { i, v ->
-            val rad = Math.toRadians(INTRO_ANGLES[i % INTRO_ANGLES.size].toDouble())
+        val offset = dp(48).toFloat()
+        val ease = PathInterpolator(0.2f, 0.8f, 0.2f, 1f)
+        views.forEach { v ->
             v.animate().cancel()
-            v.translationX = (cos(rad) * dist).toFloat()
-            v.translationY = (sin(rad) * dist).toFloat()
+            v.translationY = offset
             v.alpha = 0f
-            v.scaleX = 0.5f
-            v.scaleY = 0.5f
+            v.scaleX = 0.85f
+            v.scaleY = 0.85f
+        }
+        views.forEach { v ->
+            // Row ke hisab se delay: grid ki position se row nikalte hain
+            val row = (v.parent as? RecyclerView)?.let { rv ->
+                val pos = rv.getChildAdapterPosition(v)
+                if (pos == RecyclerView.NO_POSITION) 0 else pos / COLS
+            } ?: 0
             v.animate()
-                .translationX(0f)
                 .translationY(0f)
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setStartDelay((i % 8) * 35L)
-                .setDuration(520)
-                .setInterpolator(OvershootInterpolator(1.1f))
+                .setStartDelay(row * 45L)
+                .setDuration(450)
+                .setInterpolator(ease)
                 .start()
         }
-    }
+        }
 
     // ---------- drag and drop (fixed grid + folder) ----------
     private fun isFolder(k: String?) = k != null && k.startsWith(FOLDER_PREFIX)
@@ -800,7 +813,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         return rv.getChildAdapterPosition(child)
     }
 
-    /** Drop par decide: khali cell par move, dusre icon par swap, app+app par folder. */
     private fun placeAt(slots: MutableList<String?>, from: Int, target: Int, allowFolders: Boolean) {
         val src = slots[from] ?: return
         val tgt = slots[target]
@@ -849,7 +861,6 @@ class MainActivity : Activity(), GestureRoot.Host {
                 )
             }
 
-            /** Drag ke time live swap nahi hota. Sirf drop par decide hota hai. */
             override fun onMove(
                 recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
             ): Boolean = false
@@ -890,7 +901,6 @@ class MainActivity : Activity(), GestureRoot.Host {
                 dragLock = false
                 guide?.visible = false
 
-                // Remove check pehle (patti hide hone se pehle)
                 val removing = removeZone.visibility == View.VISIBLE && inside(removeZone, dropX, dropY)
                 removeZone.visibility = View.GONE
 
@@ -940,7 +950,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Folders: har line = id TAB naam TAB key1|key2 */
     private fun loadFolders() {
         folders.clear()
         prefs.getString("folders", "")!!.split("\n").filter { it.isNotEmpty() }.forEach { line ->
@@ -976,9 +985,11 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun cacheFile(key: String): File = File(cacheDir(), key.hashCode().toString() + ".png")
 
+    private fun cacheTag(): String = currentPack() + CACHE_VER
+
     private fun showCachedApps() {
         val c = getSharedPreferences("app_cache", MODE_PRIVATE)
-        if (c.getString("pack", "") != currentPack()) return
+        if (c.getString("pack", "") != cacheTag()) return
         val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
         val list = lines.mapNotNull { line ->
             val parts = line.split("\t")
@@ -993,14 +1004,14 @@ class MainActivity : Activity(), GestureRoot.Host {
         filterApps("")
     }
 
-    private fun saveCache(apps: List<AppItem>, pack: String) {
+    private fun saveCache(apps: List<AppItem>, tag: String) {
         try {
             for (a in apps) {
                 val f = cacheFile(a.key)
                 FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
             }
             getSharedPreferences("app_cache", MODE_PRIVATE).edit()
-                .putString("pack", pack)
+                .putString("pack", tag)
                 .putString("list", apps.joinToString("\n") { it.key + "\t" + it.label })
                 .apply()
         } catch (e: Exception) {
@@ -1009,6 +1020,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun loadApps() {
         val pack = currentPack()
+        val tag = pack + CACHE_VER
         bg.execute {
             try {
                 val pm = packageManager
@@ -1025,10 +1037,10 @@ class MainActivity : Activity(), GestureRoot.Host {
                         ri.loadLabel(pm).toString(),
                         cn.flattenToString(),
                         makeIntent(cn),
-                        toBitmap(src, sizePx)
+                        squareIcon(src, sizePx)
                     )
                 }.sortedBy { it.label.lowercase() }
-                saveCache(apps, pack)
+                saveCache(apps, tag)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     allApps = apps
@@ -1042,7 +1054,32 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Sab items ka map: app keys + folder keys (folder ka icon andar ke apps se banta hai). */
+    /**
+     * Icon ko square bitmap banata hai. Adaptive icon ki background aur foreground
+     * alag se draw hoti hain, system ka rounded mask nahi lagta.
+     */
+    private fun squareIcon(dr: Drawable, size: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        try {
+            if (dr is AdaptiveIconDrawable) {
+                dr.background?.let {
+                    it.setBounds(0, 0, size, size)
+                    it.draw(c)
+                }
+                dr.foreground?.let {
+                    it.setBounds(0, 0, size, size)
+                    it.draw(c)
+                }
+            } else {
+                dr.setBounds(0, 0, size, size)
+                dr.draw(c)
+            }
+        } catch (e: Exception) {
+        }
+        return bmp
+    }
+
     private fun buildMap(): Map<String, AppItem> {
         val m = HashMap<String, AppItem>()
         allApps.forEach { m[it.key] = it }
@@ -1058,13 +1095,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         return m
     }
 
-    /** 2x2 mini icons wala folder icon. */
     private fun makeFolderIcon(items: List<AppItem>): Bitmap {
         val size = dp(96)
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC2A2A30.toInt() }
-        c.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), size * 0.22f, size * 0.22f, bgPaint)
+        c.drawRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), bgPaint)
         val pad = size * 0.12f
         val gap = size * 0.06f
         val mini = (size - 2 * pad - gap) / 2f
@@ -1083,17 +1119,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         dockAdapter.submit(dockSlots.map { k -> k?.let { map[it] } })
         hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
         if (folderOpen) refreshFolderPopup()
-    }
-
-    private fun toBitmap(dr: Drawable, size: Int): Bitmap {
-        return try {
-            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            dr.setBounds(0, 0, size, size)
-            dr.draw(Canvas(bmp))
-            bmp
-        } catch (e: Exception) {
-            Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        }
     }
 
     private fun filterApps(q: String) {
@@ -1133,6 +1158,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         animateFolder(0f)
     }
 
+    /** Folder turant band (app launch ke baad, animation ke poore hone par). */
     private fun closeFolderInstant() {
         folderAnim?.cancel()
         folderOpen = false
@@ -1146,7 +1172,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         applyStageBlur(0f)
     }
 
-    /** Ek hi animator: scrim, card zoom aur stage blur sab isi se. */
     private fun animateFolder(target: Float) {
         folderAnim?.cancel()
         val a = ValueAnimator.ofFloat(folderF, target)
@@ -1165,7 +1190,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         a.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
-                if (target == 0f) {
+                if (target == 0f && !folderOpen) {
                     folderLayer.visibility = View.GONE
                     currentFolderId = null
                 }
@@ -1192,7 +1217,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         ))
     }
 
-    /** Folder se app nikalna. Khali cell mein wapas rakhta hai. 1 app bache to folder khatam. */
     private fun removeFromFolder(id: String, key: String) {
         val f = folders[id] ?: return
         val free = homeSlots.indexOf(null)
@@ -1485,6 +1509,8 @@ class MainActivity : Activity(), GestureRoot.Host {
             return
         }
         if (pendingReturn) return
+        // Drawer ka search aur keyboard launch ke saath hi band
+        if (searching) setSearchMode(false)
         try {
             val s = getSharedPreferences("settings", MODE_PRIVATE)
             val ms = s.getInt("anim_ms", 300).toLong()
@@ -1523,6 +1549,8 @@ class MainActivity : Activity(), GestureRoot.Host {
             else
                 ActivityOptions.makeScaleUpAnimation(src, 0, 0, src.width, src.height)
             startActivity(item.intent, opts.toBundle())
+            // Animation poora hone par folder band (overlay ke neeche, dikhega nahi)
+            closeFolderInstant()
             stage.postDelayed({
                 if (pendingReturn && stage.hasWindowFocus()) resetLaunch()
             }, 4000)
@@ -1576,8 +1604,9 @@ class MainActivity : Activity(), GestureRoot.Host {
         super.onResume()
         if (pendingReturn) resetLaunch()
         enableHighRefresh()
-        fxBlur = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("fx_blur", true)
-        fxIntro = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("fx_intro", true)
+        val sp = getSharedPreferences("settings", MODE_PRIVATE)
+        fxBlur = sp.getBoolean("fx_blur", true)
+        fxIntro = sp.getBoolean("fx_intro", true)
         applyIconStyle()
         applyClock()
         if (!appsLoaded || currentPack() != loadedPack) loadApps()
@@ -1599,24 +1628,9 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    @TargetApi(31)
-    private fun setIconBlur(step: Int) {
-        val fx = if (step == 0) null else {
-            val r = iconBlurMax * step / 8f
-            RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
-        }
-        homeGrid.setRenderEffect(fx)
-        dock.setRenderEffect(fx)
-        drawerList.setRenderEffect(fx)
-    }
-
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
     // ---------- drawer gesture ----------
-    /**
-     * Home par upar swipe se drawer khulta hai. Drawer khula ho aur list sabse upar ho
-     * to kahin se bhi neeche swipe karne par drawer band hota hai.
-     */
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock || folderOpen) return false
         return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
@@ -1735,7 +1749,6 @@ fun readIconStyle(ctx: Context): IconStyle {
     )
 }
 
-/** Fixed slots wala adapter. Null item = khali cell. */
 class AppAdapter(
     private val showLabel: Boolean,
     private val onClick: (View, AppItem) -> Unit,
