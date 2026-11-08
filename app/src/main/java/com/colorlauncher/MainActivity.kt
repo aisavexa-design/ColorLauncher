@@ -405,7 +405,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var currentPage = 0
     private var pageOffset = 0f
     private var pageAnimator: ValueAnimator? = null
-    private var pageDragBase = 0f
     private var lastEdgeTime = 0L
 
     private var folderOpen = false
@@ -547,7 +546,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             addView(dock, LinearLayout.LayoutParams(MATCH, WRAP))
         }
 
-        // Clock + date fixed upar, pages uske neeche, dock sabse neeche
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(clock, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -679,7 +677,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             addView(folderCard, FrameLayout.LayoutParams(dp(300), WRAP, Gravity.CENTER))
         }
 
-        // Ab sab views ban chuki hain, ab pages bana sakte hain
         rebuildPages()
 
         stage = FrameLayout(this)
@@ -715,7 +712,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
 
-        // Pehle cache se turant grid, phir background mein naya load
         showCachedApps()
         loadApps()
     }
@@ -782,7 +778,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Pages ka UI banata hai. Ye onCreate mein sab views ke baad call hota hai. */
     private fun rebuildPages() {
         pageRow.removeAllViews()
         pageGrids.clear()
@@ -819,7 +814,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         refreshHome()
     }
 
-    /** Har page ki width pageHost ke barabar, aur current page ka offset. */
     private fun layoutPages() {
         val w = pageHost.width
         if (w <= 0) return
@@ -855,7 +849,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Current page change. animated=true par slide, nahi to seedha jump. */
     private fun goToPage(p: Int, animated: Boolean) {
         val target = p.coerceIn(0, pageCount - 1)
         currentPage = target
@@ -874,7 +867,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // Finger se page swipe
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
         return if (dx < 0) currentPage < pageCount - 1 || pageCount < MAX_PAGES
@@ -885,28 +877,21 @@ class MainActivity : Activity(), GestureRoot.Host {
         pageAnimator?.cancel()
         val base = -currentPage * pageWidth()
         var target = base + dx
-        // Pehle page se bahar khinchne par resistance
         if (target > 0f) target *= 0.3f
         val minX = -(pageCount - 1) * pageWidth()
         if (target < minX) {
-            // Last page ke baad: naya page banne ka pehla hissa dikhayein
-            if (pageCount < MAX_PAGES) {
-                target = minX + (target - minX) * 0.5f
-            } else {
-                target = minX + (target - minX) * 0.3f
-            }
+            target = if (pageCount < MAX_PAGES) minX + (target - minX) * 0.5f
+            else minX + (target - minX) * 0.3f
         }
         setPageOffset(target)
     }
 
     override fun onPageDragEnd(vx: Float) {
-        val w = pageWidth()
-        val cur = -pageOffset / w
-        var next = currentPage
-        when {
-            vx < -800f -> next = currentPage + 1
-            vx > 800f -> next = currentPage - 1
-            else -> next = Math.round(cur)
+        val cur = -pageOffset / pageWidth()
+        val next = when {
+            vx < -800f -> currentPage + 1
+            vx > 800f -> currentPage - 1
+            else -> Math.round(cur)
         }
         if (next >= pageCount) {
             if (pageCount < MAX_PAGES) {
@@ -920,7 +905,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         goToPage(next.coerceIn(0, pageCount - 1), true)
     }
 
-    /** Naya khali page. */
     private fun addPage() {
         if (pageCount >= MAX_PAGES) return
         pageCount++
@@ -929,7 +913,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         rebuildPages()
     }
 
-    /** Khali pages ko end se hata deta hai. */
     private fun trimEmptyPages() {
         while (pageCount > 1) {
             val lastStart = (pageCount - 1) * PAGE_CELLS
@@ -942,7 +925,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         prefs.edit().putInt("home_pages", pageCount).apply()
     }
 
-    /** Drag ke time edge par page badalta hai. */
     private fun checkEdgePage(rawX: Float) {
         if (!dragLock) return
         val w = root.width
@@ -1259,7 +1241,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             .setComponent(cn)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
 
-    // ---------- icon cache (disk, crash-safe) ----------
+    // ---------- icon cache ----------
     private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
 
     private fun cacheFile(key: String): File = File(cacheDir(), key.hashCode().toString() + ".png")
@@ -1347,7 +1329,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Adaptive icon ki background aur foreground alag draw hoti hain, system ka mask nahi lagta. */
     private fun squareIcon(dr: Drawable, size: Int): Bitmap {
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -1404,7 +1385,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun refreshHome() {
-        if (!::homeSlots.isInitialized) return
         val map = buildMap()
         for (p in 0 until pageAdapters.size) {
             val from = p * PAGE_CELLS
@@ -1788,7 +1768,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         d.show()
     }
 
-    /** Dock ya home (pehla khali cell) mein app rakhta hai. */
     private fun addTo(slots: MutableList<String?>, key: String, name: String) {
         if (key in slots || folders.values.any { key in it.keys } || key in homeSlots) {
             Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
