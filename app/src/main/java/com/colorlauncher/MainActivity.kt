@@ -778,6 +778,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    /** Pages ka UI banata hai. Har page poori screen-width ka hota hai (weight nahi). */
     private fun rebuildPages() {
         pageRow.removeAllViews()
         pageGrids.clear()
@@ -798,7 +799,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             pageGrids.add(grid)
             pageAdapters.add(adapter)
             pageGuides.add(guide)
-            pageRow.addView(grid, LinearLayout.LayoutParams(0, MATCH, 1f))
+            pageRow.addView(grid, LinearLayout.LayoutParams(MATCH, MATCH))
         }
         pageRow.layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
         pageHost.post { layoutPages() }
@@ -809,18 +810,22 @@ class MainActivity : Activity(), GestureRoot.Host {
             }, LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginStart = dp(4); marginEnd = dp(4) })
         }
         pageDots.visibility = if (pageCount > 1) View.VISIBLE else View.GONE
+        if (currentPage >= pageCount) currentPage = pageCount - 1
         updateDots()
         attachDrags()
         refreshHome()
     }
 
+    /** Har page ki width pageHost ke barabar, aur current page ka offset. */
     private fun layoutPages() {
         val w = pageHost.width
         if (w <= 0) return
         for (grid in pageGrids) {
             val lp = grid.layoutParams as LinearLayout.LayoutParams
-            lp.width = w
-            grid.layoutParams = lp
+            if (lp.width != w) {
+                lp.width = w
+                grid.layoutParams = lp
+            }
         }
         pageRow.requestLayout()
         setPageOffset(-currentPage * w.toFloat())
@@ -867,22 +872,21 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    /** Swipe sirf maujood pages mein chalega. Naya page swipe se nahi banega. */
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
-        return if (dx < 0) currentPage < pageCount - 1 || pageCount < MAX_PAGES
-        else currentPage > 0
+        return if (dx < 0) currentPage < pageCount - 1 else currentPage > 0
     }
 
     override fun onPageDrag(dx: Float) {
         pageAnimator?.cancel()
         val base = -currentPage * pageWidth()
         var target = base + dx
-        if (target > 0f) target *= 0.3f
         val minX = -(pageCount - 1) * pageWidth()
-        if (target < minX) {
-            target = if (pageCount < MAX_PAGES) minX + (target - minX) * 0.5f
-            else minX + (target - minX) * 0.3f
-        }
+        val maxX = 0f
+        // Pehle page ke bahar ya aakhri page ke bahar resistance
+        if (target > maxX) target = maxX + (target - maxX) * 0.3f
+        if (target < minX) target = minX + (target - minX) * 0.3f
         setPageOffset(target)
     }
 
@@ -893,18 +897,13 @@ class MainActivity : Activity(), GestureRoot.Host {
             vx > 800f -> currentPage - 1
             else -> Math.round(cur)
         }
-        if (next >= pageCount) {
-            if (pageCount < MAX_PAGES) {
-                addPage()
-                goToPage(pageCount - 1, true)
-            } else {
-                goToPage(pageCount - 1, true)
-            }
-            return
-        }
+        val before = pageCount
         goToPage(next.coerceIn(0, pageCount - 1), true)
+        // Swipe se bana khali page (agar koi tha) hata do
+        trimAndRebuildIfNeeded(before)
     }
 
+    /** Naya khali page (sirf icon drag ke edge se ya add-to-home ke liye). */
     private fun addPage() {
         if (pageCount >= MAX_PAGES) return
         pageCount++
@@ -913,16 +912,25 @@ class MainActivity : Activity(), GestureRoot.Host {
         rebuildPages()
     }
 
+    /** Khali aakhri pages hatata hai. */
     private fun trimEmptyPages() {
         while (pageCount > 1) {
             val lastStart = (pageCount - 1) * PAGE_CELLS
             val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots[it] == null }
             if (!empty) break
+            if (currentPage == pageCount - 1) break
             repeat(PAGE_CELLS) { homeSlots.removeAt(homeSlots.size - 1) }
             pageCount--
         }
         if (currentPage >= pageCount) currentPage = pageCount - 1
         prefs.edit().putInt("home_pages", pageCount).apply()
+    }
+
+    private fun trimAndRebuildIfNeeded(before: Int) {
+        // Agar user aakhri khali page se door chala gaya to wo page hat jayega
+        val oldCount = pageCount
+        trimEmptyPages()
+        if (pageCount != oldCount || pageCount != before) rebuildPages()
     }
 
     private fun checkEdgePage(rawX: Float) {
@@ -1173,10 +1181,21 @@ class MainActivity : Activity(), GestureRoot.Host {
                 }
                 trimEmptyPages()
                 persist()
-                rv.post { refreshHome() }
+                rv.post { rebuildPagesIfCountChanged() }
             }
         }
         return ItemTouchHelper(cb)
+    }
+
+    private var builtPageCount = -1
+
+    private fun rebuildPagesIfCountChanged() {
+        if (builtPageCount != pageCount || pageGrids.size != pageCount) {
+            builtPageCount = pageCount
+            rebuildPages()
+        } else {
+            refreshHome()
+        }
     }
 
     private fun handleDrop(slots: MutableList<String?>, local: Int, rv: RecyclerView, removing: Boolean, allowFolders: Boolean) {
@@ -1790,7 +1809,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- app open animation ----------
+    // ---------- app open animation (gehra zoom, close animation nahi) ----------
     private fun launch(view: View, item: AppItem) {
         if (item.key.startsWith(FOLDER_PREFIX)) {
             openFolder(folderIdOf(item.key))
@@ -1845,6 +1864,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    /** Wapas aane par koi animation nahi: home turant normal. */
     private fun resetLaunch() {
         pendingReturn = false
         launchAnim?.cancel()
@@ -1901,12 +1921,13 @@ class MainActivity : Activity(), GestureRoot.Host {
         runIntroIfNeeded()
     }
 
+    /** Gehra zoom: stage 1.14x tak jaata hai aur fade hota hai. */
     private fun applyDepth(d: Float) {
         depth = d
-        val s = 1f + 0.10f * d
+        val s = 1f + 0.14f * d
         stage.scaleX = s
         stage.scaleY = s
-        stage.alpha = (1f - 0.5f * d).coerceIn(0f, 1f)
+        stage.alpha = (1f - 0.6f * d).coerceIn(0f, 1f)
         if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
             val step = (d.coerceIn(0f, 1f) * 8f + 0.5f).toInt()
             if (step != lastIconBlur) {
