@@ -147,7 +147,7 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
-/** Icon se full screen tak rounded-corner sheet expand hoti hai (sirf open animation). */
+/** Icon se full screen tak rounded sheet expand hoti hai (sirf open animation). */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -228,6 +228,9 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         fun onDrag(dy: Float)
         fun onDragEnd(vy: Float)
         fun onEmptyLongPress(rawX: Float, rawY: Float)
+        fun canStartPageSwipe(dx: Float): Boolean
+        fun onPageDrag(dx: Float)
+        fun onPageDragEnd(vx: Float)
     }
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
@@ -236,11 +239,12 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private var rawDownX = 0f
     private var rawDownY = 0f
     private var dragging = false
+    private var pageDragging = false
     private var longFired = false
     private var vt: VelocityTracker? = null
 
     private val longPressRunnable = Runnable {
-        if (!dragging && !longFired) {
+        if (!dragging && !pageDragging && !longFired) {
             longFired = true
             host.onEmptyLongPress(rawDownX, rawDownY)
         }
@@ -256,6 +260,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 rawDownX = e.rawX
                 rawDownY = e.rawY
                 dragging = false
+                pageDragging = false
                 longFired = false
                 cancelLong()
                 postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
@@ -267,7 +272,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 vt?.addMovement(e)
                 val dy = e.y - downY
                 val dx = e.x - downX
-                if (!dragging) {
+                if (!dragging && !pageDragging) {
                     if (abs(dy) > slop || abs(dx) > slop) cancelLong()
                     if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
                         cancelLong()
@@ -275,20 +280,33 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                         host.onDragStart()
                         host.onDrag(dy)
                         parent?.requestDisallowInterceptTouchEvent(true)
+                    } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && host.canStartPageSwipe(dx)) {
+                        cancelLong()
+                        pageDragging = true
+                        host.onPageDrag(dx)
+                        parent?.requestDisallowInterceptTouchEvent(true)
                     }
-                } else {
+                } else if (dragging) {
                     host.onDrag(dy)
+                } else if (pageDragging) {
+                    host.onPageDrag(dx)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 cancelLong()
+                val cancel = e.actionMasked == MotionEvent.ACTION_CANCEL
                 if (dragging) {
                     vt?.addMovement(e)
                     vt?.computeCurrentVelocity(1000)
-                    val cancel = e.actionMasked == MotionEvent.ACTION_CANCEL
                     host.onDragEnd(if (cancel) 0f else (vt?.yVelocity ?: 0f))
                 }
+                if (pageDragging) {
+                    vt?.addMovement(e)
+                    vt?.computeCurrentVelocity(1000)
+                    host.onPageDragEnd(if (cancel) 0f else (vt?.xVelocity ?: 0f))
+                }
                 dragging = false
+                pageDragging = false
                 vt?.recycle()
                 vt = null
             }
@@ -297,7 +315,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
-        return dragging
+        return dragging || pageDragging
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -318,7 +336,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val CACHE_VER = "#sq2"
+        private const val CACHE_VER = "#sq3"
         private val INTRO_ANGLES = intArrayOf(-135, -60, 210, 60, -165, 120, -30, 150)
     }
 
@@ -344,18 +362,16 @@ class MainActivity : Activity(), GestureRoot.Host {
     private lateinit var removeZone: TextView
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
-
-    /** Har page ka apna grid (RecyclerView). */
-    private val pageGrids = mutableListOf<RecyclerView>()
-    private val pageAdapters = mutableListOf<AppAdapter>()
-    private val pageGuides = mutableListOf<GridGuide>()
-
     private lateinit var folderLayer: FrameLayout
     private lateinit var folderScrim: View
     private lateinit var folderCard: LinearLayout
     private lateinit var folderTitle: TextView
     private lateinit var folderGrid: RecyclerView
     private lateinit var folderAdapter: AppAdapter
+
+    private val pageGrids = mutableListOf<RecyclerView>()
+    private val pageAdapters = mutableListOf<AppAdapter>()
+    private val pageGuides = mutableListOf<GridGuide>()
 
     private val widgetHost by lazy { AppWidgetHost(this, HOST_ID) }
     private val widgetMgr by lazy { AppWidgetManager.getInstance(this) }
@@ -380,7 +396,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var dragStartX = 0f
     private var dragStartY = 0f
 
-    /** Home ke saare slots (pages * 24). null = khali cell. */
     private val homeSlots = MutableList<String?>(PAGE_CELLS) { null }
     private val dockSlots = MutableList<String?>(DOCK_SLOTS) { null }
     private val folders = LinkedHashMap<String, Folder>()
@@ -390,6 +405,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var currentPage = 0
     private var pageOffset = 0f
     private var pageAnimator: ValueAnimator? = null
+    private var pageDragBase = 0f
     private var lastEdgeTime = 0L
 
     private var folderOpen = false
@@ -433,7 +449,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    /** Grid par drag ke time dashed cells dikhata hai. */
     private inner class GridGuide : RecyclerView.ItemDecoration() {
         var visible = false
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -496,9 +511,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setTextColor(0xFFFFFFFF.toInt())
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        widgetBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
+        widgetBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         hint = TextView(this).apply {
             text = "Long-press an app to add it here."
             textSize = 13f
@@ -507,10 +520,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             setPadding(dp(24), dp(32), dp(24), 0)
         }
 
-        // Pages ka container
-        pageRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
+        pageRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         pageHost = FrameLayout(this).apply {
             clipChildren = true
             addView(pageRow, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -537,9 +547,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             addView(dock, LinearLayout.LayoutParams(MATCH, WRAP))
         }
 
-        // Ab dock aur pageDots bane hain, isliye ab pages bana sakte hain (drags bhi yahin attach hote hain)
-        rebuildPages()
-
+        // Clock + date fixed upar, pages uske neeche, dock sabse neeche
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(clock, LinearLayout.LayoutParams(MATCH, WRAP))
@@ -548,9 +556,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             addView(hint, LinearLayout.LayoutParams(MATCH, WRAP))
             addView(pageHost, LinearLayout.LayoutParams(MATCH, 0, 1f))
             addView(pageDots, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
-            addView(dockHolder, LinearLayout.LayoutParams(MATCH, WRAP).apply {
-                setMargins(dp(14), 0, dp(14), dp(14))
-            })
+            addView(dockHolder, LinearLayout.LayoutParams(MATCH, WRAP))
         }
 
         drawerList = FadeRecycler(this).apply {
@@ -644,11 +650,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
-        folderAdapter = AppAdapter(
-            true,
-            { v, i -> launch(v, i) },
-            { showFolderItemMenu(it) }
-        )
+        folderAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showFolderItemMenu(it) })
         folderGrid = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 3)
             adapter = folderAdapter
@@ -676,6 +678,9 @@ class MainActivity : Activity(), GestureRoot.Host {
             addView(folderScrim, FrameLayout.LayoutParams(MATCH, MATCH))
             addView(folderCard, FrameLayout.LayoutParams(dp(300), WRAP, Gravity.CENTER))
         }
+
+        // Ab sab views ban chuki hain, ab pages bana sakte hain
+        rebuildPages()
 
         stage = FrameLayout(this)
         stage.addView(home, MATCH, MATCH)
@@ -710,6 +715,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
 
+        // Pehle cache se turant grid, phir background mein naya load
         showCachedApps()
         loadApps()
     }
@@ -776,7 +782,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Pages ka UI banata hai (pageCount ke hisaab se). Dock aur pageDots pehle bane hone chahiye. */
+    /** Pages ka UI banata hai. Ye onCreate mein sab views ke baad call hota hai. */
     private fun rebuildPages() {
         pageRow.removeAllViews()
         pageGrids.clear()
@@ -810,6 +816,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         pageDots.visibility = if (pageCount > 1) View.VISIBLE else View.GONE
         updateDots()
         attachDrags()
+        refreshHome()
     }
 
     /** Har page ki width pageHost ke barabar, aur current page ka offset. */
@@ -867,6 +874,74 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
+    // Finger se page swipe
+    override fun canStartPageSwipe(dx: Float): Boolean {
+        if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
+        return if (dx < 0) currentPage < pageCount - 1 || pageCount < MAX_PAGES
+        else currentPage > 0
+    }
+
+    override fun onPageDrag(dx: Float) {
+        pageAnimator?.cancel()
+        val base = -currentPage * pageWidth()
+        var target = base + dx
+        // Pehle page se bahar khinchne par resistance
+        if (target > 0f) target *= 0.3f
+        val minX = -(pageCount - 1) * pageWidth()
+        if (target < minX) {
+            // Last page ke baad: naya page banne ka pehla hissa dikhayein
+            if (pageCount < MAX_PAGES) {
+                target = minX + (target - minX) * 0.5f
+            } else {
+                target = minX + (target - minX) * 0.3f
+            }
+        }
+        setPageOffset(target)
+    }
+
+    override fun onPageDragEnd(vx: Float) {
+        val w = pageWidth()
+        val cur = -pageOffset / w
+        var next = currentPage
+        when {
+            vx < -800f -> next = currentPage + 1
+            vx > 800f -> next = currentPage - 1
+            else -> next = Math.round(cur)
+        }
+        if (next >= pageCount) {
+            if (pageCount < MAX_PAGES) {
+                addPage()
+                goToPage(pageCount - 1, true)
+            } else {
+                goToPage(pageCount - 1, true)
+            }
+            return
+        }
+        goToPage(next.coerceIn(0, pageCount - 1), true)
+    }
+
+    /** Naya khali page. */
+    private fun addPage() {
+        if (pageCount >= MAX_PAGES) return
+        pageCount++
+        for (i in 0 until PAGE_CELLS) homeSlots.add(null)
+        prefs.edit().putInt("home_pages", pageCount).apply()
+        rebuildPages()
+    }
+
+    /** Khali pages ko end se hata deta hai. */
+    private fun trimEmptyPages() {
+        while (pageCount > 1) {
+            val lastStart = (pageCount - 1) * PAGE_CELLS
+            val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots[it] == null }
+            if (!empty) break
+            repeat(PAGE_CELLS) { homeSlots.removeAt(homeSlots.size - 1) }
+            pageCount--
+        }
+        if (currentPage >= pageCount) currentPage = pageCount - 1
+        prefs.edit().putInt("home_pages", pageCount).apply()
+    }
+
     /** Drag ke time edge par page badalta hai. */
     private fun checkEdgePage(rawX: Float) {
         if (!dragLock) return
@@ -890,29 +965,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Naya khali page (home slots mein 24 aur cells). */
-    private fun addPage() {
-        pageCount++
-        for (i in 0 until PAGE_CELLS) homeSlots.add(null)
-        prefs.edit().putInt("home_pages", pageCount).apply()
-        rebuildPages()
-        refreshHome()
-    }
-
-    /** Khali pages ko end se hata deta hai. */
-    private fun trimEmptyPages() {
-        while (pageCount > 1) {
-            val lastStart = (pageCount - 1) * PAGE_CELLS
-            val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots[it] == null }
-            if (!empty) break
-            repeat(PAGE_CELLS) { homeSlots.removeAt(homeSlots.size - 1) }
-            pageCount--
-        }
-        if (currentPage >= pageCount) currentPage = pageCount - 1
-        prefs.edit().putInt("home_pages", pageCount).apply()
-    }
-
-    // ---------- dock style (size + position) ----------
+    // ---------- dock style ----------
     private fun applyDockStyle() {
         val sp = getSharedPreferences("settings", MODE_PRIVATE)
         val size = sp.getInt("dock_size", 1)
@@ -925,7 +978,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Dock ke icon size ko settings se decide karta hai. */
     private fun dockIconDp(): Int = when (getSharedPreferences("settings", MODE_PRIVATE).getInt("dock_size", 1)) {
         0 -> 44
         2 -> 72
@@ -978,7 +1030,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         window.decorView.post { playIntro() }
     }
 
-    /** Neeche se halka slide + fade, row ke hisab se wave (delay). */
     private fun playIntro() {
         val page = pageGrids.getOrNull(currentPage) ?: return
         val items = ArrayList<Pair<View, Int>>()
@@ -1022,7 +1073,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         return rv.getChildAdapterPosition(child)
     }
 
-    /** Drop par decide. from/target ek hi list (slots) ke index hain. */
     private fun placeAt(slots: MutableList<String?>, from: Int, target: Int, allowFolders: Boolean) {
         val src = slots[from] ?: return
         val tgt = slots[target]
@@ -1052,10 +1102,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         Collections.swap(slots, from, target)
     }
 
-    /**
-     * pageIdx = -1 matlab dock. Home par local index ko global (pageIdx*24 + local) mein badal ke
-     * homeSlots par kaam karta hai.
-     */
     private fun dragHelper(
         adapter: AppAdapter,
         pageIdx: Int,
@@ -1213,7 +1259,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             .setComponent(cn)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
 
-    // ---------- icon cache (disk) ----------
+    // ---------- icon cache (disk, crash-safe) ----------
     private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
 
     private fun cacheFile(key: String): File = File(cacheDir(), key.hashCode().toString() + ".png")
@@ -1221,26 +1267,34 @@ class MainActivity : Activity(), GestureRoot.Host {
     private fun cacheTag(): String = currentPack() + CACHE_VER
 
     private fun showCachedApps() {
-        val c = getSharedPreferences("app_cache", MODE_PRIVATE)
-        if (c.getString("pack", "") != cacheTag()) return
-        val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
-        val list = lines.mapNotNull { line ->
-            val parts = line.split("\t")
-            if (parts.size < 2) return@mapNotNull null
-            val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
-            val bmp = BitmapFactory.decodeFile(cacheFile(parts[0]).path) ?: return@mapNotNull null
-            AppItem(parts[1], parts[0], makeIntent(cn), bmp)
+        try {
+            val c = getSharedPreferences("app_cache", MODE_PRIVATE)
+            if (c.getString("pack", "") != cacheTag()) return
+            val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
+            val list = lines.mapNotNull { line ->
+                try {
+                    val parts = line.split("\t")
+                    if (parts.size < 2) return@mapNotNull null
+                    val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
+                    val bmp = BitmapFactory.decodeFile(cacheFile(parts[0]).path) ?: return@mapNotNull null
+                    AppItem(parts[1], parts[0], makeIntent(cn), bmp)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (list.isEmpty()) return
+            allApps = list
+            filterApps("")
+            refreshHome()
+        } catch (e: Exception) {
         }
-        if (list.isEmpty()) return
-        allApps = list
-        refreshHome()
-        filterApps("")
     }
 
     private fun saveCache(apps: List<AppItem>, tag: String) {
         try {
             for (a in apps) {
                 val f = cacheFile(a.key)
+                if (f.exists() && f.length() > 0) continue
                 FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
             }
             getSharedPreferences("app_cache", MODE_PRIVATE).edit()
@@ -1261,17 +1315,23 @@ class MainActivity : Activity(), GestureRoot.Host {
                 val packMap = if (pack.isNotEmpty()) IconPack.map(this, pack) else null
                 val packCtx = if (pack.isNotEmpty()) IconPack.context(this, pack) else null
                 val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                val apps = pm.queryIntentActivities(main, 0).map { ri ->
-                    val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
-                    val packDraw = packMap?.get(cn.flattenToString())
-                        ?.let { name -> packCtx?.let { IconPack.drawable(it, name) } }
-                    val src = packDraw ?: ri.loadIcon(pm)
-                    AppItem(
-                        ri.loadLabel(pm).toString(),
-                        cn.flattenToString(),
-                        makeIntent(cn),
-                        squareIcon(src, sizePx)
-                    )
+                val apps = pm.queryIntentActivities(main, 0).mapNotNull { ri ->
+                    try {
+                        val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+                        val key = cn.flattenToString()
+                        val cached = cacheFile(key)
+                        val icon: Bitmap = if (cached.exists() && cached.length() > 0 && packMap == null) {
+                            BitmapFactory.decodeFile(cached.path)
+                                ?: squareIcon(ri.loadIcon(pm), sizePx)
+                        } else {
+                            val packDraw = packMap?.get(key)
+                                ?.let { name -> packCtx?.let { IconPack.drawable(it, name) } }
+                            squareIcon(packDraw ?: ri.loadIcon(pm), sizePx)
+                        }
+                        AppItem(ri.loadLabel(pm).toString(), key, makeIntent(cn), icon)
+                    } catch (e: Exception) {
+                        null
+                    }
                 }.sortedBy { it.label.lowercase() }
                 saveCache(apps, tag)
                 runOnUiThread {
@@ -1344,6 +1404,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun refreshHome() {
+        if (!::homeSlots.isInitialized) return
         val map = buildMap()
         for (p in 0 until pageAdapters.size) {
             val from = p * PAGE_CELLS
@@ -1485,8 +1546,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         val loc = IntArray(2)
         rv.getLocationOnScreen(loc)
         val child = rv.findChildViewUnder(x - loc[0], y - loc[1]) ?: return false
-        val vh = rv.getChildViewHolder(child)
-        val pos = vh.bindingAdapterPosition
+        val pos = rv.getChildAdapterPosition(child)
         val adapter = rv.adapter as? AppAdapter ?: return false
         return pos != RecyclerView.NO_POSITION && adapter.itemAt(pos) != null
     }
@@ -1623,8 +1683,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         val ids = prefs.getString("widget_ids", "")!!
             .split(",").mapNotNull { it.toIntOrNull() }
         for (id in ids) {
-            val info = widgetMgr.getAppWidgetInfo(id)
-            if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
+            try {
+                val info = widgetMgr.getAppWidgetInfo(id)
+                if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
+            } catch (e: Exception) {
+                widgetHost.deleteAppWidgetId(id)
+            }
         }
         saveWidgetIds()
     }
@@ -1708,9 +1772,7 @@ class MainActivity : Activity(), GestureRoot.Host {
                 }
             }, LinearLayout.LayoutParams(MATCH, WRAP))
         }
-        val scroll = ScrollView(this).apply {
-            addView(card, MATCH, WRAP)
-        }
+        val scroll = ScrollView(this).apply { addView(card, MATCH, WRAP) }
         val wrap = FrameLayout(this).apply {
             setPadding(dp(12), 0, dp(12), dp(24))
             addView(scroll, MATCH, WRAP)
@@ -1967,12 +2029,18 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     override fun onStart() {
         super.onStart()
-        widgetHost.startListening()
+        try {
+            widgetHost.startListening()
+        } catch (e: Exception) {
+        }
     }
 
     override fun onStop() {
         super.onStop()
-        widgetHost.stopListening()
+        try {
+            widgetHost.stopListening()
+        } catch (e: Exception) {
+        }
     }
 
     override fun onDestroy() {
