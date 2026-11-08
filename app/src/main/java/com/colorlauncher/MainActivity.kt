@@ -147,7 +147,10 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
-/** Icon se full screen tak rounded sheet expand hoti hai (sirf open animation). */
+/**
+ * App open animation: icon ki jagah se shuru hokar full screen tak phailti hai.
+ * Sheet shuru se hi visible rehti hai (bina fade ke), icon usi ke andar rehta hai.
+ */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -183,12 +186,16 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
             from.bottom + (h - from.bottom) * tt
         )
         sheet.color = color
-        sheet.alpha = (minOf(1f, tt * 6f) * 255).toInt()
+        sheet.alpha = 255
         val rad = iconCorner + (screenCorner - iconCorner) * tt
         canvas.drawRoundRect(cur, rad, rad, sheet)
         val bmp = icon ?: return
         val half = from.width() / 2f
-        dst.set(cur.centerX() - half, cur.centerY() - half, cur.centerX() + half, cur.centerY() + half)
+        val iconScale = 1f - 0.0f * tt
+        val cx = cur.centerX()
+        val cy = cur.centerY()
+        val iw = half * 2f * iconScale
+        dst.set(cx - iw / 2f, cy - iw / 2f, cx + iw / 2f, cy + iw / 2f)
         canvas.drawBitmap(bmp, null, dst, iconPaint)
     }
 }
@@ -336,7 +343,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val CACHE_VER = "#sq3"
+        private const val CACHE_VER = "v4"
         private val INTRO_ANGLES = intArrayOf(-135, -60, 210, 60, -165, 120, -30, 150)
     }
 
@@ -406,6 +413,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var pageOffset = 0f
     private var pageAnimator: ValueAnimator? = null
     private var lastEdgeTime = 0L
+    private var builtPageCount = -1
 
     private var folderOpen = false
     private var currentFolderId: String? = null
@@ -425,7 +433,7 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var lastIconBlur = -1
     private var iconBlurOn = true
     private var listBottomGap = 0
-    private val emphasized = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+    private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
 
     private val homeBlurFx: Array<RenderEffect?> by lazy {
         Array(13) { s -> if (s == 0) null else blurEffect(dp(18) * s / 12f) }
@@ -712,6 +720,7 @@ class MainActivity : Activity(), GestureRoot.Host {
 
         registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
 
+        // Pehle cache (sahi pack ke icons), phir background mein update
         showCachedApps()
         loadApps()
     }
@@ -778,7 +787,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Pages ka UI banata hai. Har page poori screen-width ka hota hai (weight nahi). */
     private fun rebuildPages() {
         pageRow.removeAllViews()
         pageGrids.clear()
@@ -811,12 +819,12 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         pageDots.visibility = if (pageCount > 1) View.VISIBLE else View.GONE
         if (currentPage >= pageCount) currentPage = pageCount - 1
+        builtPageCount = pageCount
         updateDots()
         attachDrags()
         refreshHome()
     }
 
-    /** Har page ki width pageHost ke barabar, aur current page ka offset. */
     private fun layoutPages() {
         val w = pageHost.width
         if (w <= 0) return
@@ -872,7 +880,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Swipe sirf maujood pages mein chalega. Naya page swipe se nahi banega. */
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
         return if (dx < 0) currentPage < pageCount - 1 else currentPage > 0
@@ -884,7 +891,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         var target = base + dx
         val minX = -(pageCount - 1) * pageWidth()
         val maxX = 0f
-        // Pehle page ke bahar ya aakhri page ke bahar resistance
         if (target > maxX) target = maxX + (target - maxX) * 0.3f
         if (target < minX) target = minX + (target - minX) * 0.3f
         setPageOffset(target)
@@ -897,13 +903,9 @@ class MainActivity : Activity(), GestureRoot.Host {
             vx > 800f -> currentPage - 1
             else -> Math.round(cur)
         }
-        val before = pageCount
         goToPage(next.coerceIn(0, pageCount - 1), true)
-        // Swipe se bana khali page (agar koi tha) hata do
-        trimAndRebuildIfNeeded(before)
     }
 
-    /** Naya khali page (sirf icon drag ke edge se ya add-to-home ke liye). */
     private fun addPage() {
         if (pageCount >= MAX_PAGES) return
         pageCount++
@@ -912,7 +914,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         rebuildPages()
     }
 
-    /** Khali aakhri pages hatata hai. */
+    /** Khali aakhri pages hatata hai (current page ko chhodkar). */
     private fun trimEmptyPages() {
         while (pageCount > 1) {
             val lastStart = (pageCount - 1) * PAGE_CELLS
@@ -924,13 +926,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
         if (currentPage >= pageCount) currentPage = pageCount - 1
         prefs.edit().putInt("home_pages", pageCount).apply()
-    }
-
-    private fun trimAndRebuildIfNeeded(before: Int) {
-        // Agar user aakhri khali page se door chala gaya to wo page hat jayega
-        val oldCount = pageCount
-        trimEmptyPages()
-        if (pageCount != oldCount || pageCount != before) rebuildPages()
     }
 
     private fun checkEdgePage(rawX: Float) {
@@ -1187,11 +1182,8 @@ class MainActivity : Activity(), GestureRoot.Host {
         return ItemTouchHelper(cb)
     }
 
-    private var builtPageCount = -1
-
     private fun rebuildPagesIfCountChanged() {
         if (builtPageCount != pageCount || pageGrids.size != pageCount) {
-            builtPageCount = pageCount
             rebuildPages()
         } else {
             refreshHome()
@@ -1260,24 +1252,30 @@ class MainActivity : Activity(), GestureRoot.Host {
             .setComponent(cn)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
 
-    // ---------- icon cache ----------
+    // ---------- icon cache (pack-wise, default icons alag) ----------
     private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
 
-    private fun cacheFile(key: String): File = File(cacheDir(), key.hashCode().toString() + ".png")
+    /** Har pack ka apna folder: icons/<packname>/<hash>.png. Default ke liye "default". */
+    private fun cacheFile(pack: String, key: String): File {
+        val dir = File(cacheDir(), if (pack.isEmpty()) "default" else pack).apply { mkdirs() }
+        return File(dir, key.hashCode().toString() + ".png")
+    }
 
-    private fun cacheTag(): String = currentPack() + CACHE_VER
+    private fun cacheTag(): String = currentPack() + "|" + CACHE_VER
 
     private fun showCachedApps() {
         try {
+            val pack = currentPack()
             val c = getSharedPreferences("app_cache", MODE_PRIVATE)
-            if (c.getString("pack", "") != cacheTag()) return
+            if (c.getString("tag", "") != cacheTag()) return
             val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
             val list = lines.mapNotNull { line ->
                 try {
                     val parts = line.split("\t")
                     if (parts.size < 2) return@mapNotNull null
                     val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
-                    val bmp = BitmapFactory.decodeFile(cacheFile(parts[0]).path) ?: return@mapNotNull null
+                    val bmp = BitmapFactory.decodeFile(cacheFile(pack, parts[0]).path)
+                        ?: return@mapNotNull null
                     AppItem(parts[1], parts[0], makeIntent(cn), bmp)
                 } catch (e: Exception) {
                     null
@@ -1291,15 +1289,15 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    private fun saveCache(apps: List<AppItem>, tag: String) {
+    private fun saveCache(apps: List<AppItem>, pack: String) {
         try {
             for (a in apps) {
-                val f = cacheFile(a.key)
+                val f = cacheFile(pack, a.key)
                 if (f.exists() && f.length() > 0) continue
                 FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
             }
             getSharedPreferences("app_cache", MODE_PRIVATE).edit()
-                .putString("pack", tag)
+                .putString("tag", pack + "|" + CACHE_VER)
                 .putString("list", apps.joinToString("\n") { it.key + "\t" + it.label })
                 .apply()
         } catch (e: Exception) {
@@ -1308,11 +1306,11 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun loadApps() {
         val pack = currentPack()
-        val tag = pack + CACHE_VER
         bg.execute {
             try {
                 val pm = packageManager
                 val sizePx = dp(96)
+                // Pack ka map pehle: iske bina default icons nahi lagenge
                 val packMap = if (pack.isNotEmpty()) IconPack.map(this, pack) else null
                 val packCtx = if (pack.isNotEmpty()) IconPack.context(this, pack) else null
                 val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -1320,21 +1318,19 @@ class MainActivity : Activity(), GestureRoot.Host {
                     try {
                         val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
                         val key = cn.flattenToString()
-                        val cached = cacheFile(key)
-                        val icon: Bitmap = if (cached.exists() && cached.length() > 0 && packMap == null) {
+                        val cached = cacheFile(pack, key)
+                        val icon: Bitmap = if (cached.exists() && cached.length() > 0) {
                             BitmapFactory.decodeFile(cached.path)
-                                ?: squareIcon(ri.loadIcon(pm), sizePx)
+                                ?: makeIcon(pack, packMap, packCtx, ri, pm, sizePx)
                         } else {
-                            val packDraw = packMap?.get(key)
-                                ?.let { name -> packCtx?.let { IconPack.drawable(it, name) } }
-                            squareIcon(packDraw ?: ri.loadIcon(pm), sizePx)
+                            makeIcon(pack, packMap, packCtx, ri, pm, sizePx)
                         }
                         AppItem(ri.loadLabel(pm).toString(), key, makeIntent(cn), icon)
                     } catch (e: Exception) {
                         null
                     }
                 }.sortedBy { it.label.lowercase() }
-                saveCache(apps, tag)
+                saveCache(apps, pack)
                 runOnUiThread {
                     if (isFinishing || isDestroyed) return@runOnUiThread
                     allApps = apps
@@ -1346,6 +1342,23 @@ class MainActivity : Activity(), GestureRoot.Host {
             } catch (e: Exception) {
             }
         }
+    }
+
+    /** Pack ka icon ho to wo, warna system icon. Square banta hai. */
+    private fun makeIcon(
+        pack: String,
+        packMap: Map<String, String>?,
+        packCtx: Context?,
+        ri: android.content.pm.ResolveInfo,
+        pm: android.content.pm.PackageManager,
+        size: Int
+    ): Bitmap {
+        val key = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name).flattenToString()
+        val packDraw = if (pack.isNotEmpty() && packMap != null && packCtx != null) {
+            packMap[key]?.let { IconPack.drawable(packCtx, it) }
+        } else null
+        val src: Drawable = packDraw ?: ri.loadIcon(pm)
+        return squareIcon(src, size)
     }
 
     private fun squareIcon(dr: Drawable, size: Int): Bitmap {
@@ -1809,7 +1822,7 @@ class MainActivity : Activity(), GestureRoot.Host {
         Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
     }
 
-    // ---------- app open animation (gehra zoom, close animation nahi) ----------
+    // ---------- app open animation ----------
     private fun launch(view: View, item: AppItem) {
         if (item.key.startsWith(FOLDER_PREFIX)) {
             openFolder(folderIdOf(item.key))
@@ -1838,6 +1851,7 @@ class MainActivity : Activity(), GestureRoot.Host {
             if (custom) {
                 overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
                 overlay.visibility = View.VISIBLE
+                // Animation poora hone par hi app start hota hai
                 animateLaunch(1f, ms) { startApp(item, true, null) }
             } else {
                 startApp(item, false, view)
@@ -1864,7 +1878,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Wapas aane par koi animation nahi: home turant normal. */
     private fun resetLaunch() {
         pendingReturn = false
         launchAnim?.cancel()
@@ -1921,13 +1934,13 @@ class MainActivity : Activity(), GestureRoot.Host {
         runIntroIfNeeded()
     }
 
-    /** Gehra zoom: stage 1.14x tak jaata hai aur fade hota hai. */
+    /** Stage 1.0 se 1.14 tak zoom, fade sirf aakhri hisse mein. */
     private fun applyDepth(d: Float) {
         depth = d
         val s = 1f + 0.14f * d
         stage.scaleX = s
         stage.scaleY = s
-        stage.alpha = (1f - 0.6f * d).coerceIn(0f, 1f)
+        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
         if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
             val step = (d.coerceIn(0f, 1f) * 8f + 0.5f).toInt()
             if (step != lastIconBlur) {
