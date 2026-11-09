@@ -4,7 +4,6 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.annotation.TargetApi
-import android.app.Activity
 import android.app.ActivityOptions
 import android.app.Dialog
 import android.appwidget.AppWidgetHost
@@ -64,6 +63,7 @@ import android.widget.ScrollView
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -354,7 +354,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     }
 }
 
-class MainActivity : Activity(), GestureRoot.Host {
+class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     companion object {
         private const val COLS = 4
@@ -465,8 +465,6 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var dragBase = 0f
     private var anim: SpringAnimation? = null
     private var pendingReturn = false
-    private var pivX = 0f
-    private var pivY = 0f
 
     private var searching = false
     private var depth = 0f
@@ -2113,10 +2111,8 @@ class MainActivity : Activity(), GestureRoot.Host {
             root.getLocationInWindow(rl)
             val l = (loc[0] - rl[0]).toFloat()
             val t = (loc[1] - rl[1]).toFloat()
-            pivX = l + view.width / 2f
-            pivY = t + view.height / 2f
-            stage.pivotX = pivX
-            stage.pivotY = pivY
+            stage.pivotX = l + view.width / 2f
+            stage.pivotY = t + view.height / 2f
             pendingReturn = true
 
             if (custom) {
