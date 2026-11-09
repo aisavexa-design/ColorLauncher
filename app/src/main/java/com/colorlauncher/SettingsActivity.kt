@@ -178,6 +178,9 @@ class SettingsActivity : Activity() {
             setPadding(dp(8), dp(28), dp(8), dp(16))
         })
 
+        content.addView(sectionTitle("Recent button"))
+        RecentSettings.addTo(this, content)
+
         content.addView(sectionTitle("Animation"))
         content.addView(card().apply {
             addView(
