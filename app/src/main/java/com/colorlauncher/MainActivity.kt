@@ -124,7 +124,6 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-/** Icon shape GPU outline se (0 squircle, 1 circle, 2 square). */
 class ShapeIcon(ctx: Context) : ImageView(ctx) {
     var shape = 0
         set(v) {
@@ -150,7 +149,6 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
-/** Open animation: icon ki jagah se sheet phailti hai. */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -222,10 +220,6 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     }
 }
 
-/**
- * Touch layer. Left, right aur bottom edge ke touches intercept nahi hote,
- * taaki system back/home gesture pehle chale. Animation ke dauran naye gesture ignore.
- */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
@@ -381,9 +375,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
-
-    /** Notification dots ka hook. Listener service baad mein yahan packages bharegi. */
-    val dotKeys = HashSet<String>()
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -2301,8 +2292,9 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         drawer.setLayerType(t, null)
     }
 
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
+    // Activity ke instance par koi "override" nahi hai, isliye ye normal function hai.
+    // Home gesture par launcher ko reset karne ke liye call hota hai.
+    fun onHomeIntent(intent: Intent) {
         try {
             if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
             if (progress > 0.01f) animateProgress(0f, 0f)
