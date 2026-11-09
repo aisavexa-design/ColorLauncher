@@ -24,8 +24,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
+import android.graphics.Outline
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
@@ -42,11 +42,13 @@ import android.provider.Settings
 import android.util.Log
 import android.util.LruCache
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.Window
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
@@ -62,6 +64,7 @@ import android.widget.ScrollView
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -121,7 +124,7 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-/** Icon ko shape ke hisaab se GPU outline se clip karta hai (0 squircle, 1 circle, 2 square). */
+/** Icon shape GPU outline se (0 squircle, 1 circle, 2 square). */
 class ShapeIcon(ctx: Context) : ImageView(ctx) {
     var shape = 0
         set(v) {
@@ -132,8 +135,8 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
 
     init {
         clipToOutline = true
-        outlineProvider = object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: View, outline: android.graphics.Outline) {
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
                 val w = view.width
                 val h = view.height
                 if (w <= 0 || h <= 0) return
@@ -147,7 +150,7 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
-/** Icon se full screen tak sheet expand hoti hai (open animation). */
+/** Open animation: icon ki jagah se sheet phailti hai. */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -219,6 +222,10 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     }
 }
 
+/**
+ * Touch layer. Left, right aur bottom edge ke touches intercept nahi hote,
+ * taaki system back/home gesture pehle chale. Animation ke dauran naye gesture ignore.
+ */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
@@ -230,9 +237,11 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         fun canStartPageSwipe(dx: Float): Boolean
         fun onPageDrag(dx: Float)
         fun onPageDragEnd(vx: Float)
+        fun isBusy(): Boolean
     }
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private val edgePx = 24 * ctx.resources.displayMetrics.density
     private var downX = 0f
     private var downY = 0f
     private var rawDownX = 0f
@@ -240,75 +249,97 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private var dragging = false
     private var pageDragging = false
     private var longFired = false
+    private var ignoring = false
     private var vt: VelocityTracker? = null
 
     private val longPressRunnable = Runnable {
-        if (!dragging && !pageDragging && !longFired) {
-            longFired = true
-            host.onEmptyLongPress(rawDownX, rawDownY)
+        try {
+            if (!dragging && !pageDragging && !longFired && !ignoring) {
+                longFired = true
+                host.onEmptyLongPress(rawDownX, rawDownY)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "longPress", e)
         }
     }
 
     private fun cancelLong() = removeCallbacks(longPressRunnable)
 
+    private fun inEdge(x: Float, y: Float): Boolean =
+        x < edgePx || x > width - edgePx || y > height - edgePx
+
     private fun track(e: MotionEvent) {
-        when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downX = e.x
-                downY = e.y
-                rawDownX = e.rawX
-                rawDownY = e.rawY
-                dragging = false
-                pageDragging = false
-                longFired = false
-                cancelLong()
-                postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
-                vt?.recycle()
-                vt = VelocityTracker.obtain()
-                vt?.addMovement(e)
-            }
-            MotionEvent.ACTION_MOVE -> {
-                vt?.addMovement(e)
-                val dy = e.y - downY
-                val dx = e.x - downX
-                if (!dragging && !pageDragging) {
-                    if (abs(dy) > slop || abs(dx) > slop) cancelLong()
-                    if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
-                        cancelLong()
-                        dragging = true
-                        host.onDragStart()
-                        host.onDrag(dy)
-                        parent?.requestDisallowInterceptTouchEvent(true)
-                    } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && host.canStartPageSwipe(dx)) {
-                        cancelLong()
-                        pageDragging = true
-                        host.onPageDrag(dx)
-                        parent?.requestDisallowInterceptTouchEvent(true)
+        try {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.x
+                    downY = e.y
+                    rawDownX = e.rawX
+                    rawDownY = e.rawY
+                    dragging = false
+                    pageDragging = false
+                    longFired = false
+                    ignoring = host.isBusy() || inEdge(e.x, e.y)
+                    cancelLong()
+                    if (!ignoring) {
+                        postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
-                } else if (dragging) {
-                    host.onDrag(dy)
-                } else if (pageDragging) {
-                    host.onPageDrag(dx)
+                    vt?.recycle()
+                    vt = VelocityTracker.obtain()
+                    vt?.addMovement(e)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (ignoring) return
+                    vt?.addMovement(e)
+                    val dy = e.y - downY
+                    val dx = e.x - downX
+                    if (!dragging && !pageDragging) {
+                        if (abs(dy) > slop || abs(dx) > slop) cancelLong()
+                        if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
+                            cancelLong()
+                            dragging = true
+                            host.onDragStart()
+                            host.onDrag(dy)
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                        } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && host.canStartPageSwipe(dx)) {
+                            cancelLong()
+                            pageDragging = true
+                            host.onPageDrag(dx)
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                        }
+                    } else if (dragging) {
+                        host.onDrag(dy)
+                    } else if (pageDragging) {
+                        host.onPageDrag(dx)
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cancelLong()
+                    if (ignoring) {
+                        ignoring = false
+                        return
+                    }
+                    val cancel = e.actionMasked == MotionEvent.ACTION_CANCEL
+                    if (dragging) {
+                        vt?.addMovement(e)
+                        vt?.computeCurrentVelocity(1000)
+                        host.onDragEnd(if (cancel) 0f else (vt?.yVelocity ?: 0f))
+                    }
+                    if (pageDragging) {
+                        vt?.addMovement(e)
+                        vt?.computeCurrentVelocity(1000)
+                        host.onPageDragEnd(if (cancel) 0f else (vt?.xVelocity ?: 0f))
+                    }
+                    dragging = false
+                    pageDragging = false
+                    vt?.recycle()
+                    vt = null
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                cancelLong()
-                val cancel = e.actionMasked == MotionEvent.ACTION_CANCEL
-                if (dragging) {
-                    vt?.addMovement(e)
-                    vt?.computeCurrentVelocity(1000)
-                    host.onDragEnd(if (cancel) 0f else (vt?.yVelocity ?: 0f))
-                }
-                if (pageDragging) {
-                    vt?.addMovement(e)
-                    vt?.computeCurrentVelocity(1000)
-                    host.onPageDragEnd(if (cancel) 0f else (vt?.xVelocity ?: 0f))
-                }
-                dragging = false
-                pageDragging = false
-                vt?.recycle()
-                vt = null
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "gesture", e)
+            dragging = false
+            pageDragging = false
         }
     }
 
@@ -335,17 +366,21 @@ class MainActivity : Activity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val CACHE_VER = "v5"
-        private val INTRO_ANGLES = intArrayOf(-135, -60, 210, 60, -165, 120, -30, 150)
+        private const val CACHE_VER = "v6"
+        private const val STATE_PAGE = "state_page"
+        private const val STATE_FOLDER = "state_folder"
     }
 
     private val bg = Executors.newSingleThreadExecutor()
+
     private val iconLru = object : LruCache<String, Bitmap>(
-        (Runtime.getRuntime().maxMemory() / 16).toInt().coerceIn(8 * 1024 * 1024, 32 * 1024 * 1024)
+        (Runtime.getRuntime().maxMemory() / 24).toInt().coerceIn(6 * 1024 * 1024, 20 * 1024 * 1024)
     ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
+
     private var folderIconCache: Bitmap? = null
+    private var folderIconKey = ""
 
     /** Notification dots ka hook. Listener service baad mein yahan packages bharegi. */
     val dotKeys = HashSet<String>()
@@ -400,6 +435,10 @@ class MainActivity : Activity(), GestureRoot.Host {
     private var lastHomeBlur = -1
     private var lastStageBlur = -1
 
+    private var lastTop = -1
+    private var lastBottom = -1
+    private var lastIme = -1
+
     private var dropX = 0f
     private var dropY = 0f
     private var dragStartX = 0f
@@ -449,14 +488,17 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private val userPresentReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            if (i.action == Intent.ACTION_USER_PRESENT) {
-                introPending = true
-                runIntroIfNeeded()
+            try {
+                if (i.action == Intent.ACTION_USER_PRESENT) {
+                    introPending = true
+                    runIntroIfNeeded()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "userPresent", e)
             }
         }
     }
 
-    /** Install/uninstall hone par app list refresh (sirf list badalne par). */
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             try {
@@ -465,6 +507,12 @@ class MainActivity : Activity(), GestureRoot.Host {
             } catch (e: Exception) {
                 Log.e(TAG, "packageReceiver", e)
             }
+        }
+    }
+
+    private val backCallback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+            handleBack()
         }
     }
 
@@ -519,10 +567,17 @@ class MainActivity : Activity(), GestureRoot.Host {
             loadFolders()
             buildViews()
             setContentView(root)
+            onBackPressedDispatcher.addCallback(this, backCallback)
             setProgress(0f)
             applyClock()
             applyDockStyle()
             restoreWidgets()
+            if (savedInstanceState != null) {
+                val pg = savedInstanceState.getInt(STATE_PAGE, 0)
+                currentPage = pg.coerceIn(0, pageCount - 1)
+                val fid = savedInstanceState.getString(STATE_FOLDER)
+                if (fid != null && folders.containsKey(fid)) openFolder(fid)
+            }
             registerReceiver(userPresentReceiver, IntentFilter(Intent.ACTION_USER_PRESENT))
             val pkgFilter = IntentFilter().apply {
                 addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -538,7 +593,31 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    /** Sab views ek jagah banate hain, order fixed rakhne ke liye. */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        try {
+            outState.putInt(STATE_PAGE, currentPage)
+            outState.putString(STATE_FOLDER, currentFolderId)
+        } catch (e: Exception) {
+            Log.e(TAG, "saveState", e)
+        }
+    }
+
+    private fun handleBack() {
+        try {
+            when {
+                folderOpen -> closeFolder()
+                pendingReturn -> resetLaunch()
+                searching -> setSearchMode(false)
+                progress > 0.5f -> animateProgress(0f, 0f)
+                currentPage > 0 -> goToPage(currentPage - 1, true)
+                else -> moveTaskToBack(true)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "back", e)
+        }
+    }
+
     private fun buildViews() {
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
         drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it, "drawer") })
@@ -769,6 +848,10 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun applyInsets(top: Int, bottom: Int, ime: Int) {
         try {
+            if (top == lastTop && bottom == lastBottom && ime == lastIme) return
+            lastTop = top
+            lastBottom = bottom
+            lastIme = ime
             home.setPadding(0, top + dp(24), 0, bottom)
             (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
             header.requestLayout()
@@ -800,7 +883,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- pages ----------
     private fun loadPages() {
         val count = prefs.getInt("home_pages", 1).coerceIn(1, MAX_PAGES)
         pageCount = count
@@ -906,22 +988,29 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun goToPage(p: Int, animated: Boolean) {
-        val target = p.coerceIn(0, pageCount - 1)
-        currentPage = target
-        updateDots()
-        val end = -target * pageWidth()
-        pageAnimator?.cancel()
-        if (animated && pageAnim) {
-            val a = ValueAnimator.ofFloat(pageOffset, end)
-            a.duration = 280
-            a.interpolator = emphasized
-            a.addUpdateListener { setPageOffset(it.animatedValue as Float) }
-            pageAnimator = a
-            a.start()
-        } else {
-            setPageOffset(end)
+        try {
+            val target = p.coerceIn(0, pageCount - 1)
+            currentPage = target
+            updateDots()
+            val end = -target * pageWidth()
+            pageAnimator?.cancel()
+            if (animated && pageAnim) {
+                val a = ValueAnimator.ofFloat(pageOffset, end)
+                a.duration = 280
+                a.interpolator = emphasized
+                a.addUpdateListener { setPageOffset(it.animatedValue as Float) }
+                pageAnimator = a
+                a.start()
+            } else {
+                setPageOffset(end)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "goToPage", e)
         }
     }
+
+    override fun isBusy(): Boolean =
+        launchAnim?.isRunning == true || anim?.isRunning == true || pageAnimator?.isRunning == true
 
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
@@ -929,24 +1018,32 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     override fun onPageDrag(dx: Float) {
-        pageAnimator?.cancel()
-        val base = -currentPage * pageWidth()
-        var target = base + dx
-        val minX = -(pageCount - 1) * pageWidth()
-        val maxX = 0f
-        if (target > maxX) target = maxX + (target - maxX) * 0.3f
-        if (target < minX) target = minX + (target - minX) * 0.3f
-        setPageOffset(target)
+        try {
+            pageAnimator?.cancel()
+            val base = -currentPage * pageWidth()
+            var target = base + dx
+            val minX = -(pageCount - 1) * pageWidth()
+            val maxX = 0f
+            if (target > maxX) target = maxX + (target - maxX) * 0.3f
+            if (target < minX) target = minX + (target - minX) * 0.3f
+            setPageOffset(target)
+        } catch (e: Exception) {
+            Log.e(TAG, "pageDrag", e)
+        }
     }
 
     override fun onPageDragEnd(vx: Float) {
-        val cur = -pageOffset / pageWidth()
-        val next = when {
-            vx < -800f -> currentPage + 1
-            vx > 800f -> currentPage - 1
-            else -> Math.round(cur)
+        try {
+            val cur = -pageOffset / pageWidth()
+            val next = when {
+                vx < -800f -> currentPage + 1
+                vx > 800f -> currentPage - 1
+                else -> Math.round(cur)
+            }
+            goToPage(next.coerceIn(0, pageCount - 1), true)
+        } catch (e: Exception) {
+            Log.e(TAG, "pageDragEnd", e)
         }
-        goToPage(next.coerceIn(0, pageCount - 1), true)
     }
 
     private fun addPage() {
@@ -957,7 +1054,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         rebuildPages()
     }
 
-    /** Khali aakhri pages hatata hai (current page ko chhodkar). */
     private fun trimEmptyPages() {
         try {
             while (pageCount > 1) {
@@ -977,28 +1073,31 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun checkEdgePage(rawX: Float) {
-        if (!dragLock) return
-        val w = root.width
-        val now = System.currentTimeMillis()
-        if (now - lastEdgeTime < 700) return
-        if (rawX < dp(24)) {
-            if (currentPage > 0) {
-                lastEdgeTime = now
-                goToPage(currentPage - 1, true)
+        try {
+            if (!dragLock) return
+            val w = root.width
+            val now = System.currentTimeMillis()
+            if (now - lastEdgeTime < 700) return
+            if (rawX < dp(24)) {
+                if (currentPage > 0) {
+                    lastEdgeTime = now
+                    goToPage(currentPage - 1, true)
+                }
+            } else if (rawX > w - dp(24)) {
+                if (currentPage < pageCount - 1) {
+                    lastEdgeTime = now
+                    goToPage(currentPage + 1, true)
+                } else if (pageCount < MAX_PAGES) {
+                    lastEdgeTime = now
+                    addPage()
+                    goToPage(currentPage + 1, true)
+                }
             }
-        } else if (rawX > w - dp(24)) {
-            if (currentPage < pageCount - 1) {
-                lastEdgeTime = now
-                goToPage(currentPage + 1, true)
-            } else if (pageCount < MAX_PAGES) {
-                lastEdgeTime = now
-                addPage()
-                goToPage(currentPage + 1, true)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "edgePage", e)
         }
     }
 
-    // ---------- dock style ----------
     private fun applyDockStyle() {
         try {
             val sp = getSharedPreferences("settings", MODE_PRIVATE)
@@ -1029,7 +1128,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         dragHelper(dockAdapter, -1, dock, null, false).attachToRecyclerView(dock)
     }
 
-    // ---------- blur ----------
     @TargetApi(31)
     private fun blurEffect(r: Float): RenderEffect =
         RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
@@ -1058,7 +1156,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawerList.setRenderEffect(fx)
     }
 
-    // ---------- unlock wave ----------
     private fun runIntroIfNeeded() {
         if (!introPending) return
         if (progress > 0.01f || pendingReturn || folderOpen) return
@@ -1102,7 +1199,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- drag and drop ----------
     private fun isFolder(k: String?) = k != null && k.startsWith(FOLDER_PREFIX)
 
     private fun folderIdOf(k: String) = k.removePrefix(FOLDER_PREFIX)
@@ -1183,17 +1279,21 @@ class MainActivity : Activity(), GestureRoot.Host {
 
             override fun onSelectedChanged(vh: RecyclerView.ViewHolder?, actionState: Int) {
                 super.onSelectedChanged(vh, actionState)
-                if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && vh != null) {
-                    dragLock = true
-                    guide?.visible = true
-                    removeZone.visibility = View.VISIBLE
-                    vh.itemView.alpha = 0.7f
-                    val loc = IntArray(2)
-                    vh.itemView.getLocationOnScreen(loc)
-                    dragStartX = loc[0].toFloat()
-                    dragStartY = loc[1].toFloat()
-                    dropX = dragStartX + vh.itemView.width / 2f
-                    dropY = dragStartY + vh.itemView.height / 2f
+                try {
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && vh != null) {
+                        dragLock = true
+                        guide?.visible = true
+                        removeZone.visibility = View.VISIBLE
+                        vh.itemView.alpha = 0.7f
+                        val loc = IntArray(2)
+                        vh.itemView.getLocationOnScreen(loc)
+                        dragStartX = loc[0].toFloat()
+                        dragStartY = loc[1].toFloat()
+                        dropX = dragStartX + vh.itemView.width / 2f
+                        dropY = dragStartY + vh.itemView.height / 2f
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "dragStart", e)
                 }
             }
 
@@ -1326,7 +1426,6 @@ class MainActivity : Activity(), GestureRoot.Host {
             .setComponent(cn)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
 
-    // ---------- icon cache (pack-wise, LRU memory + disk) ----------
     private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
 
     private fun cacheFile(pack: String, key: String): File {
@@ -1336,7 +1435,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun cacheTag(): String = currentPack() + "|" + CACHE_VER
 
-    /** Disk se icon, pehle memory LRU se. */
     private fun loadIconFromDisk(pack: String, key: String): Bitmap? {
         val mk = pack + "|" + key
         iconLru.get(mk)?.let { return it }
@@ -1474,18 +1572,21 @@ class MainActivity : Activity(), GestureRoot.Host {
         return bmp
     }
 
-    /** Folder icon ek baar bana kar cache hota hai. Folder badalne par hi naya banta hai. */
     private fun buildMap(): Map<String, AppItem> {
         val m = HashMap<String, AppItem>()
         allApps.forEach { m[it.key] = it }
         for ((id, f) in folders) {
             val items = f.keys.mapNotNull { m[it] }
-            m[FOLDER_PREFIX + id] = AppItem(
-                f.name,
-                FOLDER_PREFIX + id,
-                Intent(Intent.ACTION_MAIN),
-                makeFolderIcon(items)
-            )
+            val sig = id + "|" + f.name + "|" + items.joinToString(",") { it.key }
+            val icon = if (folderIconKey == sig && folderIconCache != null) {
+                folderIconCache!!
+            } else {
+                makeFolderIcon(items).also {
+                    folderIconKey = sig
+                    folderIconCache = it
+                }
+            }
+            m[FOLDER_PREFIX + id] = AppItem(f.name, FOLDER_PREFIX + id, Intent(Intent.ACTION_MAIN), icon)
         }
         return m
     }
@@ -1512,10 +1613,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         return bmp
     }
 
-    /**
-     * Home ke pages ko DiffUtil se update karta hai: sirf badle hue cells redraw hote hain,
-     * poora list reset nahi hota. Index out of range se bachne ke liye har page ka slice safe hai.
-     */
     private fun refreshHomeSafe() {
         try {
             refreshHome()
@@ -1566,15 +1663,18 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- folder ----------
     private fun openFolder(id: String) {
-        val f = folders[id] ?: return
-        currentFolderId = id
-        folderOpen = true
-        folderTitle.text = f.name
-        refreshFolderPopup()
-        folderLayer.visibility = View.VISIBLE
-        animateFolder(1f)
+        try {
+            val f = folders[id] ?: return
+            currentFolderId = id
+            folderOpen = true
+            folderTitle.text = f.name
+            refreshFolderPopup()
+            folderLayer.visibility = View.VISIBLE
+            animateFolder(1f)
+        } catch (e: Exception) {
+            Log.e(TAG, "openFolder", e)
+        }
     }
 
     private fun closeFolder() {
@@ -1584,44 +1684,52 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun closeFolderInstant() {
-        folderAnim?.cancel()
-        folderOpen = false
-        currentFolderId = null
-        folderF = 0f
-        folderLayer.visibility = View.GONE
-        folderScrim.alpha = 0f
-        folderCard.alpha = 0f
-        folderCard.scaleX = 0.8f
-        folderCard.scaleY = 0.8f
-        applyStageBlur(0f)
+        try {
+            folderAnim?.cancel()
+            folderOpen = false
+            currentFolderId = null
+            folderF = 0f
+            folderLayer.visibility = View.GONE
+            folderScrim.alpha = 0f
+            folderCard.alpha = 0f
+            folderCard.scaleX = 0.8f
+            folderCard.scaleY = 0.8f
+            applyStageBlur(0f)
+        } catch (e: Exception) {
+            Log.e(TAG, "closeFolderInstant", e)
+        }
     }
 
     private fun animateFolder(target: Float) {
-        folderAnim?.cancel()
-        val a = ValueAnimator.ofFloat(folderF, target)
-        a.duration = if (target > 0f) 340L else 240L
-        a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
-        a.addUpdateListener {
-            val f = it.animatedValue as Float
-            folderF = f
-            val c = f.coerceIn(0f, 1f)
-            folderScrim.alpha = c
-            folderCard.alpha = c
-            val s = 0.8f + 0.2f * f
-            folderCard.scaleX = s
-            folderCard.scaleY = s
-            applyStageBlur(c)
-        }
-        a.addListener(object : AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: Animator) {
-                if (target == 0f && !folderOpen) {
-                    folderLayer.visibility = View.GONE
-                    currentFolderId = null
-                }
+        try {
+            folderAnim?.cancel()
+            val a = ValueAnimator.ofFloat(folderF, target)
+            a.duration = if (target > 0f) 340L else 240L
+            a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
+            a.addUpdateListener {
+                val f = it.animatedValue as Float
+                folderF = f
+                val c = f.coerceIn(0f, 1f)
+                folderScrim.alpha = c
+                folderCard.alpha = c
+                val s = 0.8f + 0.2f * f
+                folderCard.scaleX = s
+                folderCard.scaleY = s
+                applyStageBlur(c)
             }
-        })
-        folderAnim = a
-        a.start()
+            a.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (target == 0f && !folderOpen) {
+                        folderLayer.visibility = View.GONE
+                        currentFolderId = null
+                    }
+                }
+            })
+            folderAnim = a
+            a.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "animateFolder", e)
+        }
     }
 
     private fun refreshFolderPopup() {
@@ -1669,7 +1777,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- long-press (home menu) ----------
     private fun inside(v: View, x: Float, y: Float): Boolean {
         if (v.visibility != View.VISIBLE || v.height == 0) return false
         val loc = IntArray(2)
@@ -1693,11 +1800,15 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     override fun onEmptyLongPress(rawX: Float, rawY: Float) {
-        if (progress > 0.01f || pendingReturn || folderOpen) return
-        if (isOnAnyItem(rawX, rawY)) return
-        if (inside(widgetBox, rawX, rawY)) return
-        window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-        showHomeMenu()
+        try {
+            if (progress > 0.01f || pendingReturn || folderOpen) return
+            if (isOnAnyItem(rawX, rawY)) return
+            if (inside(widgetBox, rawX, rawY)) return
+            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            showHomeMenu()
+        } catch (e: Exception) {
+            Log.e(TAG, "emptyLongPress", e)
+        }
     }
 
     private fun showHomeMenu() {
@@ -1713,7 +1824,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         showSheet("Home screen", null, actions)
     }
 
-    // ---------- widgets ----------
     private fun pickWidget() {
         try {
             val pm = packageManager
@@ -1858,7 +1968,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- long-press menu (drawer) ----------
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
         val actions = mutableListOf<Pair<String, () -> Unit>>()
@@ -1984,7 +2093,6 @@ class MainActivity : Activity(), GestureRoot.Host {
         }
     }
 
-    // ---------- app open animation ----------
     private fun launch(view: View, item: AppItem) {
         try {
             if (item.key.startsWith(FOLDER_PREFIX)) {
@@ -2043,12 +2151,16 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun resetLaunch() {
-        pendingReturn = false
-        launchAnim?.cancel()
-        applyDepth(0f)
-        overlay.t = 0f
-        overlay.visibility = View.GONE
-        stage.setLayerType(View.LAYER_TYPE_NONE, null)
+        try {
+            pendingReturn = false
+            launchAnim?.cancel()
+            applyDepth(0f)
+            overlay.t = 0f
+            overlay.visibility = View.GONE
+            stage.setLayerType(View.LAYER_TYPE_NONE, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "resetLaunch", e)
+        }
     }
 
     private fun animateLaunch(to: Float, duration: Long, onEnd: (() -> Unit)? = null) {
@@ -2119,7 +2231,6 @@ class MainActivity : Activity(), GestureRoot.Host {
 
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
-    // ---------- drawer gesture ----------
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock || folderOpen) return false
         return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
@@ -2146,38 +2257,46 @@ class MainActivity : Activity(), GestureRoot.Host {
     }
 
     private fun animateProgress(target: Float, velocity: Float) {
-        anim?.cancel()
-        setLayers(true)
-        val a = SpringAnimation(FloatValueHolder(progress))
-        a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
-        a.setStartVelocity(velocity)
-        a.setMinimumVisibleChange(1f / 256f)
-        a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
-        a.addEndListener { _, canceled, _, _ ->
-            if (!canceled) {
-                setProgress(target)
-                setLayers(false)
+        try {
+            anim?.cancel()
+            setLayers(true)
+            val a = SpringAnimation(FloatValueHolder(progress))
+            a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
+            a.setStartVelocity(velocity)
+            a.setMinimumVisibleChange(1f / 256f)
+            a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
+            a.addEndListener { _, canceled, _, _ ->
+                if (!canceled) {
+                    setProgress(target)
+                    setLayers(false)
+                }
             }
+            anim = a
+            a.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "animateProgress", e)
         }
-        anim = a
-        a.start()
     }
 
     private fun setProgress(p: Float) {
-        progress = p
-        val h = root.height.toFloat()
-        drawer.alpha = p
-        drawer.translationY = (1f - p) * 0.25f * h
-        home.alpha = 1f - p
-        val s = 1f - 0.08f * p
-        home.scaleX = s
-        home.scaleY = s
-        applyHomeBlur(p)
-        val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
-        if (drawer.visibility != dv) drawer.visibility = dv
-        val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
-        if (home.visibility != hv) home.visibility = hv
-        if (p < 0.001f && searching) setSearchMode(false)
+        try {
+            progress = p
+            val h = root.height.toFloat()
+            drawer.alpha = p
+            drawer.translationY = (1f - p) * 0.25f * h
+            home.alpha = 1f - p
+            val s = 1f - 0.08f * p
+            home.scaleX = s
+            home.scaleY = s
+            applyHomeBlur(p)
+            val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
+            if (drawer.visibility != dv) drawer.visibility = dv
+            val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+            if (home.visibility != hv) home.visibility = hv
+            if (p < 0.001f && searching) setSearchMode(false)
+        } catch (e: Exception) {
+            Log.e(TAG, "setProgress", e)
+        }
     }
 
     private fun setLayers(on: Boolean) {
@@ -2186,31 +2305,20 @@ class MainActivity : Activity(), GestureRoot.Host {
         drawer.setLayerType(t, null)
     }
 
-    @Suppress("OVERRIDE_DEPRECATION")
-    override fun onBackPressed() {
-        if (folderOpen) {
-            closeFolder()
-        } else if (pendingReturn) {
-            resetLaunch()
-        } else if (searching) {
-            setSearchMode(false)
-        } else if (progress > 0.5f) {
-            animateProgress(0f, 0f)
-        } else if (currentPage > 0) {
-            goToPage(currentPage - 1, true)
-        }
-    }
-
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
-        if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
-        if (progress > 0.01f) animateProgress(0f, 0f)
+        try {
+            if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
+            if (progress > 0.01f) animateProgress(0f, 0f)
+        } catch (e: Exception) {
+            Log.e(TAG, "newIntent", e)
+        }
     }
 
     override fun onStart() {
         super.onStart()
         try {
-            if (::widgetHost.isInitialized || true) widgetHost.startListening()
+            widgetHost.startListening()
         } catch (e: Exception) {
             Log.e(TAG, "widget start", e)
         }
@@ -2264,13 +2372,11 @@ class AppAdapter(
 
     init { setHasStableIds(true) }
 
-    /** Poori list badalti hai (sirf jab size ya order completely badle). */
     fun submit(list: List<AppItem?>) {
         items = list.toList()
         notifyDataSetChanged()
     }
 
-    /** DiffUtil: sirf badle hue cells update hote hain, scroll aur drag smooth rehta hai. */
     fun submitDiff(list: List<AppItem?>) {
         val old = items
         val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
