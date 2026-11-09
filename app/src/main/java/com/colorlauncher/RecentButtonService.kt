@@ -134,7 +134,11 @@ class RecentButtonService : AccessibilityService() {
 
     /** Settings se position set karne ke liye. */
     fun savePosition(x: Int, y: Int) {
-        prefs?.edit()?.putInt(KEY_X, x)?.putInt(KEY_Y, y)?.apply()
+    prefs?.edit()?.putInt(KEY_X, x)?.putInt(KEY_Y, y)?.apply()
+    val lp = params ?: return
+    lp.x = x
+    lp.y = y
+    try { wm?.updateViewLayout(button, lp) } catch (e: Exception) { Log.e(TAG, "move", e) }
     }
 
     fun removeButton() {
