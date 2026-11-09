@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
@@ -13,7 +14,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
-/** Settings screen mein "Recent button" ka section. Activity ki file mein sirf addTo() call karna hai. */
+/** Settings screen mein "Recent button" ka section. */
 object RecentSettings {
 
     fun addTo(activity: Activity, container: LinearLayout) {
@@ -35,14 +36,13 @@ object RecentSettings {
         }
 
         val toggle = Switch(activity).apply {
-            text = "Recent button dikhao"
+            text = "Recent button chalu rakho"
             setTextColor(Color.WHITE)
             isChecked = prefs.getBoolean(RecentButtonService.KEY_ENABLED, true)
             setOnCheckedChangeListener { _, on ->
-                prefs.edit().putBoolean(RecentButtonService.KEY_ENABLED, on).apply()
                 val svc = RecentButtonService.instance
                 if (svc != null) svc.setEnabled(on)
-                else Toast.makeText(activity, "Pehle Accessibility permission on karo", Toast.LENGTH_SHORT).show()
+                else prefs.edit().putBoolean(RecentButtonService.KEY_ENABLED, on).apply()
                 status.text = statusText(on)
             }
         }
@@ -56,16 +56,16 @@ object RecentSettings {
 
         val xInput = EditText(activity).apply {
             hint = "X (px)"
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
-            setText(prefs.getInt(RecentButtonService.KEY_X, activity.resources.displayMetrics.widthPixels - dp(56)).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            setText(prefs.getInt(RecentButtonService.KEY_X, activity.resources.displayMetrics.widthPixels / 2).toString())
             setTextColor(Color.WHITE)
             setHintTextColor(0x99FFFFFF.toInt())
         }
 
         val yInput = EditText(activity).apply {
             hint = "Y (px)"
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
-            setText(prefs.getInt(RecentButtonService.KEY_Y, activity.resources.displayMetrics.heightPixels - dp(200)).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+            setText(prefs.getInt(RecentButtonService.KEY_Y, activity.resources.displayMetrics.heightPixels - dp(56)).toString())
             setTextColor(Color.WHITE)
             setHintTextColor(0x99FFFFFF.toInt())
         }
@@ -88,28 +88,16 @@ object RecentSettings {
                 val svc = RecentButtonService.instance
                 if (svc != null) {
                     svc.savePosition(x, y)
+                    Toast.makeText(activity, "Position save ho gayi", Toast.LENGTH_SHORT).show()
                 } else {
                     prefs.edit().putInt(RecentButtonService.KEY_X, x).putInt(RecentButtonService.KEY_Y, y).apply()
-                }
-                Toast.makeText(activity, "Position save ho gayi", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        val previewBtn = Button(activity).apply {
-            text = "Preview dikhao"
-            setOnClickListener {
-                val svc = RecentButtonService.instance
-                if (svc == null) {
-                    Toast.makeText(activity, "Pehle Accessibility permission on karo", Toast.LENGTH_SHORT).show()
-                } else {
-                    svc.setEnabled(true)
-                    svc.showButton()
+                    Toast.makeText(activity, "Position save hogi, pehle Accessibility on karo", Toast.LENGTH_SHORT).show()
                 }
             }
         }
 
         val hint = TextView(activity).apply {
-            text = "X/Y screen ke top-left se pixels mein hain. Button ko drag karke bhi position badal sakte ho."
+            text = "Settings kholne par button dikhega. Settings se bahar aate hi wo almost transparent ho jayega, aur recent icon par tap karne par Recents khulega."
             textSize = 12f
             setTextColor(0x99FFFFFF.toInt())
             setPadding(0, dp(6), 0, dp(4))
@@ -123,8 +111,17 @@ object RecentSettings {
         container.addView(accessBtn)
         container.addView(xyRow)
         container.addView(applyBtn)
-        container.addView(previewBtn)
         container.addView(hint)
+    }
+
+    /** SettingsActivity ke onResume mein call karo: edit mode on. */
+    fun onEnter() {
+        RecentButtonService.instance?.enterEditMode()
+    }
+
+    /** SettingsActivity ke onStop mein call karo: locked mode. */
+    fun onExit() {
+        RecentButtonService.instance?.exitEditMode()
     }
 
     private fun statusText(on: Boolean): String {
