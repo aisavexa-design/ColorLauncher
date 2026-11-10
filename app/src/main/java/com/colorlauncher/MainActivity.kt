@@ -2204,7 +2204,225 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         launchAnim = a
         a.start()
     }
+    // ---------------- Missing helpers (restored) ----------------
 
+    override fun onEmptyLongPress(rawX: Float, rawY: Float) {
+        try {
+            if (progress > 0.01f || pendingReturn || folderOpen) return
+            if (isOnAnyItem(rawX, rawY)) return
+            if (inside(widgetBox, rawX, rawY)) return
+            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            showHomeMenu()
+        } catch (e: Exception) {
+            Log.e(TAG, "emptyLongPress", e)
+        }
+    }
+
+    private fun inside(v: View, x: Float, y: Float): Boolean {
+        if (v.visibility != View.VISIBLE || v.height == 0) return false
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        return x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height
+    }
+
+    private fun onItem(rv: RecyclerView, x: Float, y: Float): Boolean {
+        if (!inside(rv, x, y)) return false
+        val loc = IntArray(2)
+        rv.getLocationOnScreen(loc)
+        val child = rv.findChildViewUnder(x - loc[0], y - loc[1]) ?: return false
+        val pos = rv.getChildAdapterPosition(child)
+        val adapter = rv.adapter as? AppAdapter ?: return false
+        return pos != RecyclerView.NO_POSITION && adapter.itemAt(pos) != null
+    }
+
+    private fun isOnAnyItem(x: Float, y: Float): Boolean {
+        for (g in pageGrids) if (onItem(g, x, y)) return true
+        return onItem(dock, x, y)
+    }
+
+    private fun applyClock() {
+        try {
+            val on = prefs.getBoolean("clock", true)
+            clock.visibility = if (on) View.VISIBLE else View.GONE
+            date.visibility = if (on) View.VISIBLE else View.GONE
+        } catch (e: Exception) {
+            Log.e(TAG, "clock", e)
+        }
+    }
+
+    private fun applyIconStyle() {
+        try {
+            val s = readIconStyle(this)
+            for (a in pageAdapters) a.applyStyle(s)
+            dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
+            drawerAdapter.applyStyle(s)
+            folderAdapter.applyStyle(s)
+            drawerGapH = s.gapH
+            drawerGapV = s.gapV
+            drawerList.invalidateItemDecorations()
+        } catch (e: Exception) {
+            Log.e(TAG, "iconStyle", e)
+        }
+    }
+
+    private fun showHomeMenu() {
+        val clockOn = prefs.getBoolean("clock", true)
+        val actions = listOf<Pair<String, () -> Unit>>(
+            "Add widget" to { pickWidget() },
+            (if (clockOn) "Hide clock" else "Show clock") to {
+                prefs.edit().putBoolean("clock", !clockOn).apply()
+                applyClock()
+            },
+            "Launcher settings" to { startActivity(Intent(this, SettingsActivity::class.java)) }
+        )
+        showSheet("Home screen", null, actions)
+    }
+
+    private fun pickWidget() {
+        try {
+            val pm = packageManager
+            val providers = widgetMgr.installedProviders
+                .sortedBy { it.loadLabel(pm).toString().lowercase() }
+            if (providers.isEmpty()) {
+                Toast.makeText(this, "Koi widget installed nahi hai", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val actions = providers.map { info ->
+                info.loadLabel(pm).toString() to { bindWidget(info) }
+            }
+            showSheet("Add widget", null, actions)
+        } catch (e: Exception) {
+            Log.e(TAG, "pickWidget", e)
+        }
+    }
+
+    private fun bindWidget(info: AppWidgetProviderInfo) {
+        try {
+            val id = widgetHost.allocateAppWidgetId()
+            if (widgetMgr.bindAppWidgetIdIfAllowed(id, info.provider)) {
+                afterBind(id)
+            } else {
+                pendingWidgetId = id
+                @Suppress("DEPRECATION")
+                startActivityForResult(
+                    Intent(AppWidgetManager.ACTION_APPWIDGET_BIND).apply {
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
+                    },
+                    REQ_BIND
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "bindWidget", e)
+        }
+    }
+
+    private fun afterBind(id: Int) {
+        try {
+            val info = widgetMgr.getAppWidgetInfo(id)
+            if (info == null) {
+                widgetHost.deleteAppWidgetId(id)
+                return
+            }
+            if (info.configure != null) {
+                pendingWidgetId = id
+                @Suppress("DEPRECATION")
+                startActivityForResult(
+                    Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                        component = info.configure
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                    },
+                    REQ_CONFIG
+                )
+            } else {
+                finishAddWidget(id, info)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "afterBind", e)
+            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
+        }
+    }
+
+    private fun finishAddWidget(id: Int, info: AppWidgetProviderInfo) {
+        addWidgetView(id, info)
+        saveWidgetIds()
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        try {
+            when (requestCode) {
+                REQ_BIND -> {
+                    if (resultCode == RESULT_OK) afterBind(pendingWidgetId)
+                    else widgetHost.deleteAppWidgetId(pendingWidgetId)
+                }
+                REQ_CONFIG -> {
+                    if (resultCode == RESULT_OK) {
+                        val info = widgetMgr.getAppWidgetInfo(pendingWidgetId)
+                        if (info != null) finishAddWidget(pendingWidgetId, info)
+                        else widgetHost.deleteAppWidgetId(pendingWidgetId)
+                    } else {
+                        widgetHost.deleteAppWidgetId(pendingWidgetId)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "activityResult", e)
+        }
+    }
+
+    private fun addWidgetView(id: Int, info: AppWidgetProviderInfo) {
+        try {
+            val hv: AppWidgetHostView = widgetHost.createView(this, id, info)
+            hv.tag = id
+            hv.setOnLongClickListener {
+                showSheet("Widget", null, listOf("Remove widget" to {
+                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
+                    widgetBox.removeView(hv)
+                    saveWidgetIds()
+                }))
+                true
+            }
+            val h = dp(max(info.minHeight, 60))
+            widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, h).apply {
+                setMargins(dp(12), dp(8), dp(12), 0)
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "addWidgetView", e)
+            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
+        }
+    }
+
+    private fun currentWidgetIds(): List<Int> =
+        (0 until widgetBox.childCount).mapNotNull { widgetBox.getChildAt(it).tag as? Int }
+
+    private fun saveWidgetIds() {
+        try {
+            prefs.edit().putString("widget_ids", currentWidgetIds().joinToString(",")).apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "saveWidgetIds", e)
+        }
+    }
+
+    private fun restoreWidgets() {
+        try {
+            val ids = (prefs.getString("widget_ids", "") ?: "")
+                .split(",").mapNotNull { it.toIntOrNull() }
+            for (id in ids) {
+                try {
+                    val info = widgetMgr.getAppWidgetInfo(id)
+                    if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
+                } catch (e: Exception) {
+                    Log.e(TAG, "restore widget $id", e)
+                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
+                }
+            }
+            saveWidgetIds()
+        } catch (e: Exception) {
+            Log.e(TAG, "restoreWidgets", e)
+        }
+    }
     private fun avgColor(b: Bitmap): Int =
         Bitmap.createScaledBitmap(b, 1, 1, true).getPixel(0, 0) or 0xFF000000.toInt()
 }
