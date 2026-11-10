@@ -31,6 +31,7 @@ import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -381,13 +382,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
-    /** Sab RecyclerView grids ke liye ek hi pool, memory aur bind dono bachte hain. */
     private val sharedPool = RecyclerView.RecycledViewPool()
 
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
     private var launchToken: Any? = null
-    private var closeAnimPending = false
+    private var returningFromApp = false
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -563,6 +563,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    // ---------------- Lifecycle ----------------
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
@@ -593,9 +595,65 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
             registerReceiver(packageReceiver, pkgFilter)
             showCachedApps()
-            // loadApps yahan nahi, sirf onResume mein (duplicate load se bachne ke liye)
         } catch (e: Exception) {
             Log.e(TAG, "onCreate failed", e)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        try {
+            widgetHost.startListening()
+        } catch (e: Exception) {
+            Log.e(TAG, "widget start", e)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        try {
+            val wasReturning = pendingReturn || returningFromApp
+            returningFromApp = false
+            if (pendingReturn) resetLaunch()
+            enableHighRefresh()
+            val sp = getSharedPreferences("settings", MODE_PRIVATE)
+            fxBlur = sp.getBoolean("fx_blur", true)
+            fxIntro = sp.getBoolean("fx_intro", true)
+            pageAnim = sp.getBoolean("page_anim", true)
+            applyIconStyle()
+            applyClock()
+            applyDockStyle()
+            if (!appsLoaded || currentPack() != loadedPack) loadApps()
+            runIntroIfNeeded()
+            if (wasReturning) playCloseAnim()
+        } catch (e: Exception) {
+            Log.e(TAG, "onResume", e)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try {
+            lastHomeBlur = -1
+            lastStageBlur = -1
+            home.setRenderEffect(null)
+            stage.setRenderEffect(null)
+            pageAnimator?.cancel()
+            folderAnim?.cancel()
+            closeAnim?.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "onPause", e)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try {
+            if (pendingReturn) returningFromApp = true
+            anim?.cancel()
+            widgetHost.stopListening()
+        } catch (e: Exception) {
+            Log.e(TAG, "onStop", e)
         }
     }
 
@@ -607,6 +665,69 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         } catch (e: Exception) {
             Log.e(TAG, "saveState", e)
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        try {
+            if (level >= TRIM_MEMORY_RUNNING_LOW) {
+                iconLru.evictAll()
+                folderIconCache = null
+                folderIconKey = ""
+            }
+            if (level >= TRIM_MEMORY_UI_HIDDEN) {
+                sharedPool.clear()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "trim", e)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        try {
+            if (pendingReturn) resetLaunch()
+            if (folderOpen) closeFolderInstant()
+            if (searching) setSearchMode(false)
+            if (progress > 0.01f) animateProgress(0f, 0f)
+        } catch (e: Exception) {
+            Log.e(TAG, "newIntent", e)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(userPresentReceiver)
+        } catch (e: Exception) {
+        }
+        try {
+            unregisterReceiver(packageReceiver)
+        } catch (e: Exception) {
+        }
+        try {
+            stage.removeCallbacks(null)
+            pageAnimator?.cancel()
+            anim?.cancel()
+            folderAnim?.cancel()
+            launchAnim?.cancel()
+            closeAnim?.cancel()
+            pageAnimator = null
+            anim = null
+            folderAnim = null
+            launchAnim = null
+            closeAnim = null
+        } catch (e: Exception) {
+            Log.e(TAG, "destroyCancel", e)
+        }
+        bg.shutdownNow()
+        iconLru.evictAll()
+        folderIconCache = null
+        sharedPool.clear()
+    }
+
+    override fun onBackPressed() {
+        handleBack()
     }
 
     private fun handleBack() {
@@ -621,6 +742,24 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
         } catch (e: Exception) {
             Log.e(TAG, "back", e)
+        }
+    }
+
+    // ---------------- Views ----------------
+
+    private fun setupWindow() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            val lp = window.attributes
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = lp
         }
     }
 
@@ -839,22 +978,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    private fun setupWindow() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.TRANSPARENT
-        if (Build.VERSION.SDK_INT >= 29) {
-            window.isNavigationBarContrastEnforced = false
-            window.isStatusBarContrastEnforced = false
-        }
-        if (Build.VERSION.SDK_INT >= 28) {
-            val lp = window.attributes
-            lp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            window.attributes = lp
-        }
-    }
-
     private fun applyInsets(top: Int, bottom: Int, ime: Int) {
         try {
             if (top == lastTop && bottom == lastBottom && ime == lastIme) return
@@ -891,6 +1014,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "refresh rate", e)
         }
     }
+
+    // ---------------- Pages ----------------
 
     private fun loadPages() {
         val count = prefs.getInt("home_pages", 1).coerceIn(1, MAX_PAGES)
@@ -1019,44 +1144,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    override fun isBusy(): Boolean =
-        launchAnim?.isRunning == true || anim?.isRunning == true || pageAnimator?.isRunning == true ||
-            closeAnim?.isRunning == true
-
-    override fun canStartPageSwipe(dx: Float): Boolean {
-        if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
-        return if (dx < 0) currentPage < pageCount - 1 else currentPage > 0
-    }
-
-    override fun onPageDrag(dx: Float) {
-        try {
-            pageAnimator?.cancel()
-            val base = -currentPage * pageWidth()
-            var target = base + dx
-            val minX = -(pageCount - 1) * pageWidth()
-            val maxX = 0f
-            if (target > maxX) target = maxX + (target - maxX) * 0.3f
-            if (target < minX) target = minX + (target - minX) * 0.3f
-            setPageOffset(target)
-        } catch (e: Exception) {
-            Log.e(TAG, "pageDrag", e)
-        }
-    }
-
-    override fun onPageDragEnd(vx: Float) {
-        try {
-            val cur = -pageOffset / pageWidth()
-            val next = when {
-                vx < -800f -> currentPage + 1
-                vx > 800f -> currentPage - 1
-                else -> Math.round(cur)
-            }
-            goToPage(next.coerceIn(0, max(0, pageCount - 1)), true)
-        } catch (e: Exception) {
-            Log.e(TAG, "pageDragEnd", e)
-        }
-    }
-
     private fun addPage() {
         if (pageCount >= MAX_PAGES) return
         pageCount++
@@ -1139,6 +1226,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         dragHelper(dockAdapter, -1, dock, null, false).attachToRecyclerView(dock)
     }
 
+    // ---------------- Blur ----------------
+
     @TargetApi(31)
     private fun blurEffect(r: Float): RenderEffect =
         RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
@@ -1166,6 +1255,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         dock.setRenderEffect(fx)
         drawerList.setRenderEffect(fx)
     }
+
+    // ---------------- Intro ----------------
 
     private fun runIntroIfNeeded() {
         if (!introPending) return
@@ -1209,6 +1300,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "playIntro", e)
         }
     }
+
+    // ---------------- Drag and drop ----------------
 
     private fun isFolder(k: String?) = k != null && k.startsWith(FOLDER_PREFIX)
 
@@ -1373,44 +1466,246 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    private fun applyIconStyle() {
+    // ---------------- Drawer progress (Host) ----------------
+
+    override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
+        if (dragLock || folderOpen) return false
+        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+    }
+
+    override fun onDragStart() {
+        anim?.cancel()
+        dragBase = progress
+        setLayers(true)
+    }
+
+    override fun onDrag(dy: Float) {
+        setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
+    }
+
+    override fun onDragEnd(vy: Float) {
+        val v = -vy / dist()
+        val open = when {
+            v > 0.6f -> true
+            v < -0.6f -> false
+            else -> progress > 0.5f
+        }
+        animateProgress(if (open) 1f else 0f, v)
+    }
+
+    private fun dist() = maxOf(1f, root.height * 0.5f)
+
+    private fun animateProgress(target: Float, velocity: Float) {
         try {
-            val s = readIconStyle(this)
-            for (a in pageAdapters) a.applyStyle(s)
-            dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
-            drawerAdapter.applyStyle(s)
-            folderAdapter.applyStyle(s)
-            drawerGapH = s.gapH
-            drawerGapV = s.gapV
-            drawerList.invalidateItemDecorations()
+            anim?.cancel()
+            setLayers(true)
+            val a = SpringAnimation(FloatValueHolder(progress))
+            a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
+            a.setStartVelocity(velocity)
+            a.setMinimumVisibleChange(1f / 256f)
+            a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
+            a.addEndListener { _, canceled, _, _ ->
+                if (!canceled) {
+                    setProgress(target)
+                    setLayers(false)
+                }
+            }
+            anim = a
+            a.start()
         } catch (e: Exception) {
-            Log.e(TAG, "iconStyle", e)
+            Log.e(TAG, "animateProgress", e)
         }
     }
 
-    private fun applyClock() {
+    private fun setProgress(p: Float) {
         try {
-            val on = prefs.getBoolean("clock", true)
-            clock.visibility = if (on) View.VISIBLE else View.GONE
-            date.visibility = if (on) View.VISIBLE else View.GONE
+            progress = p
+            val h = root.height.toFloat()
+            drawer.alpha = p
+            drawer.translationY = (1f - p) * 0.25f * h
+            home.alpha = 1f - p
+            val s = 1f - 0.08f * p
+            home.scaleX = s
+            home.scaleY = s
+            applyHomeBlur(p)
+            val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
+            if (drawer.visibility != dv) drawer.visibility = dv
+            val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+            if (home.visibility != hv) home.visibility = hv
+            if (p < 0.001f && searching) setSearchMode(false)
         } catch (e: Exception) {
-            Log.e(TAG, "clock", e)
+            Log.e(TAG, "setProgress", e)
         }
     }
 
-    private fun loadFolders() {
+    private fun setLayers(on: Boolean) {
+        val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
+        home.setLayerType(t, null)
+        drawer.setLayerType(t, null)
+    }
+
+    private fun applyDepth(d: Float) {
+        depth = d
+        val s = 1f + 0.14f * d
+        stage.scaleX = s
+        stage.scaleY = s
+        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+        if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
+            val step = if (d > 0.5f) 8 else 0
+            if (step != lastIconBlur) {
+                lastIconBlur = step
+                setIconBlur(step)
+            }
+        }
+    }
+
+    // ---------------- Search ----------------
+
+    private fun filterApps(q: String) {
         try {
-            folders.clear()
-            (prefs.getString("folders", "") ?: "").split("\n").filter { it.isNotEmpty() }.forEach { line ->
-                val p = line.split("\t")
-                if (p.size < 3) return@forEach
-                val keys = p[2].split("|").filter { it.isNotEmpty() }.toMutableList()
-                folders[p[0]] = Folder(p[1], keys)
+            drawerAdapter.submitDiff(
+                if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "filterApps", e)
+        }
+    }
+
+    private fun setSearchMode(on: Boolean) {
+        try {
+            searching = on
+            titleView.visibility = if (on) View.GONE else View.VISIBLE
+            searchBox.visibility = if (on) View.VISIBLE else View.GONE
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            if (on) {
+                searchBox.requestFocus()
+                imm.showSoftInput(searchBox, 0)
+            } else {
+                searchBox.setText("")
+                imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "loadFolders", e)
+            Log.e(TAG, "search", e)
         }
     }
+
+    // ---------------- Folder ----------------
+
+    private fun openFolder(id: String) {
+        try {
+            val f = folders[id] ?: return
+            currentFolderId = id
+            folderOpen = true
+            folderTitle.text = f.name
+            refreshFolderPopup()
+            folderLayer.visibility = View.VISIBLE
+            animateFolder(1f)
+        } catch (e: Exception) {
+            Log.e(TAG, "openFolder", e)
+        }
+    }
+
+    private fun closeFolder() {
+        if (!folderOpen) return
+        folderOpen = false
+        animateFolder(0f)
+    }
+
+    private fun closeFolderInstant() {
+        try {
+            folderAnim?.cancel()
+            folderOpen = false
+            currentFolderId = null
+            folderF = 0f
+            folderLayer.visibility = View.GONE
+            folderScrim.alpha = 0f
+            folderCard.alpha = 0f
+            folderCard.scaleX = 0.8f
+            folderCard.scaleY = 0.8f
+            applyStageBlur(0f)
+        } catch (e: Exception) {
+            Log.e(TAG, "closeFolderInstant", e)
+        }
+    }
+
+    private fun animateFolder(target: Float) {
+        try {
+            folderAnim?.cancel()
+            val a = ValueAnimator.ofFloat(folderF, target)
+            a.duration = if (target > 0f) 340L else 240L
+            a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
+            a.addUpdateListener {
+                val f = it.animatedValue as Float
+                folderF = f
+                val c = f.coerceIn(0f, 1f)
+                folderScrim.alpha = c
+                folderCard.alpha = c
+                val s = 0.8f + 0.2f * f
+                folderCard.scaleX = s
+                folderCard.scaleY = s
+                applyStageBlur(c)
+            }
+            a.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (target == 0f && !folderOpen) {
+                        folderLayer.visibility = View.GONE
+                        currentFolderId = null
+                    }
+                }
+            })
+            folderAnim = a
+            a.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "animateFolder", e)
+        }
+    }
+
+    private fun refreshFolderPopup() {
+        try {
+            val id = currentFolderId ?: return
+            val f = folders[id] ?: return
+            folderTitle.text = f.name
+            val map = buildMap()
+            folderAdapter.submitDiff(f.keys.map { map[it] })
+        } catch (e: Exception) {
+            Log.e(TAG, "folderPopup", e)
+        }
+    }
+
+    private fun showFolderItemMenu(item: AppItem) {
+        val id = currentFolderId ?: return
+        val pkg = item.intent.component?.packageName ?: return
+        showSheet(item.label, item.icon, listOf(
+            "Remove from folder" to { removeFromFolder(id, item.key) },
+            "App info" to { openAppInfo(pkg) }
+        ))
+    }
+
+    private fun removeFromFolder(id: String, key: String) {
+        try {
+            val f = folders[id] ?: return
+            val free = homeSlots.indexOf(null)
+            if (free < 0) {
+                Toast.makeText(this, "Home screen full hai", Toast.LENGTH_SHORT).show()
+                return
+            }
+            f.keys.remove(key)
+            homeSlots[free] = key
+            if (f.keys.size <= 1) {
+                val slot = homeSlots.indexOf(FOLDER_PREFIX + id)
+                val left = f.keys.firstOrNull()
+                folders.remove(id)
+                if (slot >= 0) homeSlots[slot] = left
+                closeFolderInstant()
+            }
+            persist()
+            refreshHomeSafe()
+        } catch (e: Exception) {
+            Log.e(TAG, "removeFromFolder", e)
+        }
+    }
+
+    // ---------------- Data: persist and apps ----------------
 
     private fun persist() {
         try {
@@ -1425,6 +1720,20 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 .apply()
         } catch (e: Exception) {
             Log.e(TAG, "persist", e)
+        }
+    }
+
+    private fun loadFolders() {
+        try {
+            folders.clear()
+            (prefs.getString("folders", "") ?: "").split("\n").filter { it.isNotEmpty() }.forEach { line ->
+                val p = line.split("\t")
+                if (p.size < 3) return@forEach
+                val keys = p[2].split("|").filter { it.isNotEmpty() }.toMutableList()
+                folders[p[0]] = Folder(p[1], keys)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "loadFolders", e)
         }
     }
 
@@ -1444,8 +1753,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         return File(dir, key.hashCode().toString() + ".png")
     }
 
-    private fun cacheTag(): String = currentPack() + "|" + CACHE_VER
-
     private fun loadIconFromDisk(pack: String, key: String): Bitmap? {
         val mk = pack + "|" + key
         iconLru.get(mk)?.let { return it }
@@ -1463,7 +1770,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         try {
             val pack = currentPack()
             val c = getSharedPreferences("app_cache", MODE_PRIVATE)
-            if (c.getString("tag", "") != cacheTag()) return
+            if (c.getString("tag", "") != pack + "|" + CACHE_VER) return
             val lines = (c.getString("list", "") ?: "").split("\n").filter { it.isNotEmpty() }
             val list = lines.mapNotNull { line ->
                 try {
@@ -1486,7 +1793,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Cache save: sirf wahi icons likhta hai jo disk par nahi hain. */
     private fun saveCache(apps: List<AppItem>, pack: String) {
         try {
             for (a in apps) {
@@ -1648,341 +1954,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         if (folderOpen) refreshFolderPopup()
     }
 
-    private fun filterApps(q: String) {
-        try {
-            drawerAdapter.submitDiff(
-                if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "filterApps", e)
-        }
-    }
-
-    private fun setSearchMode(on: Boolean) {
-        try {
-            searching = on
-            titleView.visibility = if (on) View.GONE else View.VISIBLE
-            searchBox.visibility = if (on) View.VISIBLE else View.GONE
-            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            if (on) {
-                searchBox.requestFocus()
-                imm.showSoftInput(searchBox, 0)
-            } else {
-                searchBox.setText("")
-                imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "search", e)
-        }
-    }
-
-    private fun openFolder(id: String) {
-        try {
-            val f = folders[id] ?: return
-            currentFolderId = id
-            folderOpen = true
-            folderTitle.text = f.name
-            refreshFolderPopup()
-            folderLayer.visibility = View.VISIBLE
-            animateFolder(1f)
-        } catch (e: Exception) {
-            Log.e(TAG, "openFolder", e)
-        }
-    }
-
-    private fun closeFolder() {
-        if (!folderOpen) return
-        folderOpen = false
-        animateFolder(0f)
-    }
-
-    private fun closeFolderInstant() {
-        try {
-            folderAnim?.cancel()
-            folderOpen = false
-            currentFolderId = null
-            folderF = 0f
-            folderLayer.visibility = View.GONE
-            folderScrim.alpha = 0f
-            folderCard.alpha = 0f
-            folderCard.scaleX = 0.8f
-            folderCard.scaleY = 0.8f
-            applyStageBlur(0f)
-        } catch (e: Exception) {
-            Log.e(TAG, "closeFolderInstant", e)
-        }
-    }
-
-    private fun animateFolder(target: Float) {
-        try {
-            folderAnim?.cancel()
-            val a = ValueAnimator.ofFloat(folderF, target)
-            a.duration = if (target > 0f) 340L else 240L
-            a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
-            a.addUpdateListener {
-                val f = it.animatedValue as Float
-                folderF = f
-                val c = f.coerceIn(0f, 1f)
-                folderScrim.alpha = c
-                folderCard.alpha = c
-                val s = 0.8f + 0.2f * f
-                folderCard.scaleX = s
-                folderCard.scaleY = s
-                applyStageBlur(c)
-            }
-            a.addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator) {
-                    if (target == 0f && !folderOpen) {
-                        folderLayer.visibility = View.GONE
-                        currentFolderId = null
-                    }
-                }
-            })
-            folderAnim = a
-            a.start()
-        } catch (e: Exception) {
-            Log.e(TAG, "animateFolder", e)
-        }
-    }
-
-    private fun refreshFolderPopup() {
-        try {
-            val id = currentFolderId ?: return
-            val f = folders[id] ?: return
-            folderTitle.text = f.name
-            val map = buildMap()
-            folderAdapter.submitDiff(f.keys.map { map[it] })
-        } catch (e: Exception) {
-            Log.e(TAG, "folderPopup", e)
-        }
-    }
-
-    private fun showFolderItemMenu(item: AppItem) {
-        val id = currentFolderId ?: return
-        val pkg = item.intent.component?.packageName ?: return
-        showSheet(item.label, item.icon, listOf(
-            "Remove from folder" to { removeFromFolder(id, item.key) },
-            "App info" to { openAppInfo(pkg) }
-        ))
-    }
-
-    private fun removeFromFolder(id: String, key: String) {
-        try {
-            val f = folders[id] ?: return
-            val free = homeSlots.indexOf(null)
-            if (free < 0) {
-                Toast.makeText(this, "Home screen full hai", Toast.LENGTH_SHORT).show()
-                return
-            }
-            f.keys.remove(key)
-            homeSlots[free] = key
-            if (f.keys.size <= 1) {
-                val slot = homeSlots.indexOf(FOLDER_PREFIX + id)
-                val left = f.keys.firstOrNull()
-                folders.remove(id)
-                if (slot >= 0) homeSlots[slot] = left
-                closeFolderInstant()
-            }
-            persist()
-            refreshHomeSafe()
-        } catch (e: Exception) {
-            Log.e(TAG, "removeFromFolder", e)
-        }
-    }
-
-    private fun inside(v: View, x: Float, y: Float): Boolean {
-        if (v.visibility != View.VISIBLE || v.height == 0) return false
-        val loc = IntArray(2)
-        v.getLocationOnScreen(loc)
-        return x >= loc[0] && x <= loc[0] + v.width && y >= loc[1] && y <= loc[1] + v.height
-    }
-
-    private fun onItem(rv: RecyclerView, x: Float, y: Float): Boolean {
-        if (!inside(rv, x, y)) return false
-        val loc = IntArray(2)
-        rv.getLocationOnScreen(loc)
-        val child = rv.findChildViewUnder(x - loc[0], y - loc[1]) ?: return false
-        val pos = rv.getChildAdapterPosition(child)
-        val adapter = rv.adapter as? AppAdapter ?: return false
-        return pos != RecyclerView.NO_POSITION && adapter.itemAt(pos) != null
-    }
-
-    private fun isOnAnyItem(x: Float, y: Float): Boolean {
-        for (g in pageGrids) if (onItem(g, x, y)) return true
-        return onItem(dock, x, y)
-    }
-
-    override fun onEmptyLongPress(rawX: Float, rawY: Float) {
-        try {
-            if (progress > 0.01f || pendingReturn || folderOpen) return
-            if (isOnAnyItem(rawX, rawY)) return
-            if (inside(widgetBox, rawX, rawY)) return
-            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            showHomeMenu()
-        } catch (e: Exception) {
-            Log.e(TAG, "emptyLongPress", e)
-        }
-    }
-
-    private fun showHomeMenu() {
-        val clockOn = prefs.getBoolean("clock", true)
-        val actions = listOf<Pair<String, () -> Unit>>(
-            "Add widget" to { pickWidget() },
-            (if (clockOn) "Hide clock" else "Show clock") to {
-                prefs.edit().putBoolean("clock", !clockOn).apply()
-                applyClock()
-            },
-            "Launcher settings" to { startActivity(Intent(this, SettingsActivity::class.java)) }
-        )
-        showSheet("Home screen", null, actions)
-    }
-
-    private fun pickWidget() {
-        try {
-            val pm = packageManager
-            val providers = widgetMgr.installedProviders
-                .sortedBy { it.loadLabel(pm).toString().lowercase() }
-            if (providers.isEmpty()) {
-                Toast.makeText(this, "Koi widget installed nahi hai", Toast.LENGTH_SHORT).show()
-                return
-            }
-            val actions = providers.map { info ->
-                info.loadLabel(pm).toString() to { bindWidget(info) }
-            }
-            showSheet("Add widget", null, actions)
-        } catch (e: Exception) {
-            Log.e(TAG, "pickWidget", e)
-        }
-    }
-
-    private fun bindWidget(info: AppWidgetProviderInfo) {
-        try {
-            val id = widgetHost.allocateAppWidgetId()
-            if (widgetMgr.bindAppWidgetIdIfAllowed(id, info.provider)) {
-                afterBind(id)
-            } else {
-                pendingWidgetId = id
-                @Suppress("DEPRECATION")
-                startActivityForResult(
-                    Intent(AppWidgetManager.ACTION_APPWIDGET_BIND).apply {
-                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
-                    },
-                    REQ_BIND
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "bindWidget", e)
-            try { widgetHost.deleteAppWidgetId(pendingWidgetId) } catch (_: Exception) {}
-        }
-    }
-
-    private fun afterBind(id: Int) {
-        try {
-            val info = widgetMgr.getAppWidgetInfo(id)
-            if (info == null) {
-                widgetHost.deleteAppWidgetId(id)
-                return
-            }
-            if (info.configure != null) {
-                pendingWidgetId = id
-                @Suppress("DEPRECATION")
-                startActivityForResult(
-                    Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
-                        component = info.configure
-                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-                    },
-                    REQ_CONFIG
-                )
-            } else {
-                finishAddWidget(id, info)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "afterBind", e)
-            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
-        }
-    }
-
-    private fun finishAddWidget(id: Int, info: AppWidgetProviderInfo) {
-        addWidgetView(id, info)
-        saveWidgetIds()
-    }
-
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        try {
-            when (requestCode) {
-                REQ_BIND -> {
-                    if (resultCode == RESULT_OK) afterBind(pendingWidgetId)
-                    else widgetHost.deleteAppWidgetId(pendingWidgetId)
-                }
-                REQ_CONFIG -> {
-                    if (resultCode == RESULT_OK) {
-                        val info = widgetMgr.getAppWidgetInfo(pendingWidgetId)
-                        if (info != null) finishAddWidget(pendingWidgetId, info)
-                        else widgetHost.deleteAppWidgetId(pendingWidgetId)
-                    } else {
-                        widgetHost.deleteAppWidgetId(pendingWidgetId)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "activityResult", e)
-        }
-    }
-
-    private fun addWidgetView(id: Int, info: AppWidgetProviderInfo) {
-        try {
-            val hv: AppWidgetHostView = widgetHost.createView(this, id, info)
-            hv.tag = id
-            hv.setOnLongClickListener {
-                showSheet("Widget", null, listOf("Remove widget" to {
-                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
-                    widgetBox.removeView(hv)
-                    saveWidgetIds()
-                }))
-                true
-            }
-            val h = dp(max(info.minHeight, 60))
-            widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, h).apply {
-                setMargins(dp(12), dp(8), dp(12), 0)
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "addWidgetView", e)
-            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
-        }
-    }
-
-    private fun currentWidgetIds(): List<Int> =
-        (0 until widgetBox.childCount).mapNotNull { widgetBox.getChildAt(it).tag as? Int }
-
-    private fun saveWidgetIds() {
-        try {
-            prefs.edit().putString("widget_ids", currentWidgetIds().joinToString(",")).apply()
-        } catch (e: Exception) {
-            Log.e(TAG, "saveWidgetIds", e)
-        }
-    }
-
-    private fun restoreWidgets() {
-        try {
-            val ids = (prefs.getString("widget_ids", "") ?: "")
-                .split(",").mapNotNull { it.toIntOrNull() }
-            for (id in ids) {
-                try {
-                    val info = widgetMgr.getAppWidgetInfo(id)
-                    if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
-                } catch (e: Exception) {
-                    Log.e(TAG, "restore widget $id", e)
-                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
-                }
-            }
-            saveWidgetIds()
-        } catch (e: Exception) {
-            Log.e(TAG, "restoreWidgets", e)
-        }
-    }
+    // ---------------- Launch and close animation ----------------
 
     private fun showMenu(item: AppItem, where: String) {
         val pkg = item.intent.component?.packageName ?: return
@@ -2235,214 +2207,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun avgColor(b: Bitmap): Int =
         Bitmap.createScaledBitmap(b, 1, 1, true).getPixel(0, 0) or 0xFF000000.toInt()
-
-    override fun onResume() {
-        super.onResume()
-        try {
-            val wasReturning = pendingReturn
-            if (pendingReturn) resetLaunch()
-            if (wasReturning) playCloseAnim()
-            enableHighRefresh()
-            val sp = getSharedPreferences("settings", MODE_PRIVATE)
-            fxBlur = sp.getBoolean("fx_blur", true)
-            fxIntro = sp.getBoolean("fx_intro", true)
-            pageAnim = sp.getBoolean("page_anim", true)
-            applyIconStyle()
-            applyClock()
-            applyDockStyle()
-            if (!appsLoaded || currentPack() != loadedPack) loadApps()
-            runIntroIfNeeded()
-        } catch (e: Exception) {
-            Log.e(TAG, "onResume", e)
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        try {
-            // Recents/app switch se pehle blur aur animations band: kam kaam, kam lag
-            lastHomeBlur = -1
-            lastStageBlur = -1
-            home.setRenderEffect(null)
-            stage.setRenderEffect(null)
-            pageAnimator?.cancel()
-            folderAnim?.cancel()
-            closeAnim?.cancel()
-        } catch (e: Exception) {
-            Log.e(TAG, "onPause", e)
-        }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        try {
-            anim?.cancel()
-            widgetHost.stopListening()
-        } catch (e: Exception) {
-            Log.e(TAG, "widget stop", e)
-        }
-    }
-
-    override fun onStart() {
-        super.onStart()
-        try {
-            widgetHost.startListening()
-        } catch (e: Exception) {
-            Log.e(TAG, "widget start", e)
-        }
-    }
-
-    @Deprecated("Use onTrimMemory", level = DeprecationLevel.HIDDEN)
-    private fun unusedMarker() {}
-
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        try {
-            if (level >= TRIM_MEMORY_RUNNING_LOW) {
-                iconLru.evictAll()
-                folderIconCache = null
-                folderIconKey = ""
-            }
-            if (level >= TRIM_MEMORY_UI_HIDDEN) {
-                sharedPool.clear()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "trim", e)
-        }
-    }
-// MainActivity class ke andar add karo (Host methods ke saath)
-override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
-    if (dragLock || folderOpen) return false
-    return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
-}
-
-override fun onDragStart() {
-    anim?.cancel()
-    dragBase = progress
-    setLayers(true)
-}
-
-override fun onDrag(dy: Float) {
-    setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
-}
-
-override fun onDragEnd(vy: Float) {
-    val v = -vy / dist()
-    val open = when {
-        v > 0.6f -> true
-        v < -0.6f -> false
-        else -> progress > 0.5f
-    }
-    animateProgress(if (open) 1f else 0f, v)
-}
-
-private fun dist() = maxOf(1f, root.height * 0.5f)
-
-private fun animateProgress(target: Float, velocity: Float) {
-    try {
-        anim?.cancel()
-        setLayers(true)
-        val a = SpringAnimation(FloatValueHolder(progress))
-        a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
-        a.setStartVelocity(velocity)
-        a.setMinimumVisibleChange(1f / 256f)
-        a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
-        a.addEndListener { _, canceled, _, _ ->
-            if (!canceled) {
-                setProgress(target)
-                setLayers(false)
-            }
-        }
-        anim = a
-        a.start()
-    } catch (e: Exception) {
-        Log.e(TAG, "animateProgress", e)
-    }
-}
-
-private fun setProgress(p: Float) {
-    try {
-        progress = p
-        val h = root.height.toFloat()
-        drawer.alpha = p
-        drawer.translationY = (1f - p) * 0.25f * h
-        home.alpha = 1f - p
-        val s = 1f - 0.08f * p
-        home.scaleX = s
-        home.scaleY = s
-        applyHomeBlur(p)
-        val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
-        if (drawer.visibility != dv) drawer.visibility = dv
-        val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
-        if (home.visibility != hv) home.visibility = hv
-        if (p < 0.001f && searching) setSearchMode(false)
-    } catch (e: Exception) {
-        Log.e(TAG, "setProgress", e)
-    }
-}
-
-private fun setLayers(on: Boolean) {
-    val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
-    home.setLayerType(t, null)
-    drawer.setLayerType(t, null)
-}
-
-private fun applyDepth(d: Float) {
-    depth = d
-    val s = 1f + 0.14f * d
-    stage.scaleX = s
-    stage.scaleY = s
-    stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
-    if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
-        val step = if (d > 0.5f) 8 else 0
-        if (step != lastIconBlur) {
-            lastIconBlur = step
-            setIconBlur(step)
-        }
-    }
-}
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        try {
-            if (pendingReturn) resetLaunch()
-            if (folderOpen) closeFolderInstant()
-            if (searching) setSearchMode(false)
-            if (progress > 0.01f) animateProgress(0f, 0f)
-        } catch (e: Exception) {
-            Log.e(TAG, "newIntent", e)
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            unregisterReceiver(userPresentReceiver)
-        } catch (e: Exception) {
-        }
-        try {
-            unregisterReceiver(packageReceiver)
-        } catch (e: Exception) {
-        }
-        try {
-            stage.removeCallbacks(null)
-            pageAnimator?.cancel()
-            anim?.cancel()
-            folderAnim?.cancel()
-            launchAnim?.cancel()
-            closeAnim?.cancel()
-            pageAnimator = null
-            anim = null
-            folderAnim = null
-            launchAnim = null
-            closeAnim = null
-        } catch (e: Exception) {
-            Log.e(TAG, "destroyCancel", e)
-        }
-        bg.shutdownNow()
-        iconLru.evictAll()
-        folderIconCache = null
-        sharedPool.clear()
-    }
 }
 
 data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean, val gapH: Int, val gapV: Int)
@@ -2553,7 +2317,8 @@ class AppAdapter(
             }
 
             h.icon.visibility = View.VISIBLE
-            if (h.icon.drawable?.let { (it as? android.graphics.drawable.BitmapDrawable)?.bitmap } !== item.icon) {
+            val current = (h.icon.drawable as? BitmapDrawable)?.bitmap
+            if (current !== item.icon) {
                 h.icon.setImageBitmap(item.icon)
             }
 
