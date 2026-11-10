@@ -375,6 +375,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
+    private var launchToken: Any? = null
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -1481,6 +1482,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     private fun loadApps() {
+        if (bg.isShutdown) return
         val pack = currentPack()
         bg.execute {
             try {
@@ -2128,8 +2130,10 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 ActivityOptions.makeScaleUpAnimation(src, 0, 0, src.width, src.height)
             startActivity(item.intent, opts.toBundle())
             closeFolderInstant()
+            val token = Any()
+            launchToken = token
             stage.postDelayed({
-                if (pendingReturn && stage.hasWindowFocus()) resetLaunch()
+                if (launchToken === token && pendingReturn) resetLaunch()
             }, 4000)
         } catch (e: Exception) {
             Log.e(TAG, "startApp", e)
@@ -2208,7 +2212,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         stage.scaleY = s
         stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
         if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
-            val step = (d.coerceIn(0f, 1f) * 8f + 0.5f).toInt()
+            val step = if (d > 0.5f) 8 else 0
             if (step != lastIconBlur) {
                 lastIconBlur = step
                 setIconBlur(step)
@@ -2292,11 +2296,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         drawer.setLayerType(t, null)
     }
 
-    // Activity ke instance par koi "override" nahi hai, isliye ye normal function hai.
-    // Home gesture par launcher ko reset karne ke liye call hota hai.
-    fun onHomeIntent(intent: Intent) {
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
         try {
-            if (pendingReturn && launchAnim?.isRunning == true) resetLaunch()
+            if (pendingReturn) resetLaunch()
+            if (folderOpen) closeFolderInstant()
+            if (searching) setSearchMode(false)
             if (progress > 0.01f) animateProgress(0f, 0f)
         } catch (e: Exception) {
             Log.e(TAG, "newIntent", e)
