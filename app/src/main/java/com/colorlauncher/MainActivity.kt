@@ -2310,7 +2310,97 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "trim", e)
         }
     }
+// MainActivity class ke andar add karo (Host methods ke saath)
+override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
+    if (dragLock || folderOpen) return false
+    return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
+}
 
+override fun onDragStart() {
+    anim?.cancel()
+    dragBase = progress
+    setLayers(true)
+}
+
+override fun onDrag(dy: Float) {
+    setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
+}
+
+override fun onDragEnd(vy: Float) {
+    val v = -vy / dist()
+    val open = when {
+        v > 0.6f -> true
+        v < -0.6f -> false
+        else -> progress > 0.5f
+    }
+    animateProgress(if (open) 1f else 0f, v)
+}
+
+private fun dist() = maxOf(1f, root.height * 0.5f)
+
+private fun animateProgress(target: Float, velocity: Float) {
+    try {
+        anim?.cancel()
+        setLayers(true)
+        val a = SpringAnimation(FloatValueHolder(progress))
+        a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
+        a.setStartVelocity(velocity)
+        a.setMinimumVisibleChange(1f / 256f)
+        a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
+        a.addEndListener { _, canceled, _, _ ->
+            if (!canceled) {
+                setProgress(target)
+                setLayers(false)
+            }
+        }
+        anim = a
+        a.start()
+    } catch (e: Exception) {
+        Log.e(TAG, "animateProgress", e)
+    }
+}
+
+private fun setProgress(p: Float) {
+    try {
+        progress = p
+        val h = root.height.toFloat()
+        drawer.alpha = p
+        drawer.translationY = (1f - p) * 0.25f * h
+        home.alpha = 1f - p
+        val s = 1f - 0.08f * p
+        home.scaleX = s
+        home.scaleY = s
+        applyHomeBlur(p)
+        val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
+        if (drawer.visibility != dv) drawer.visibility = dv
+        val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+        if (home.visibility != hv) home.visibility = hv
+        if (p < 0.001f && searching) setSearchMode(false)
+    } catch (e: Exception) {
+        Log.e(TAG, "setProgress", e)
+    }
+}
+
+private fun setLayers(on: Boolean) {
+    val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
+    home.setLayerType(t, null)
+    drawer.setLayerType(t, null)
+}
+
+private fun applyDepth(d: Float) {
+    depth = d
+    val s = 1f + 0.14f * d
+    stage.scaleX = s
+    stage.scaleY = s
+    stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
+        val step = if (d > 0.5f) 8 else 0
+        if (step != lastIconBlur) {
+            lastIconBlur = step
+            setIconBlur(step)
+        }
+    }
+}
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         try {
