@@ -259,6 +259,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     private fun cancelLong() = removeCallbacks(longPressRunnable)
 
+    override fun onDetachedFromWindow() {
+        removeCallbacks(longPressRunnable)
+        vt?.recycle()
+        vt = null
+        super.onDetachedFromWindow()
+    }
+
     private fun inEdge(x: Float, y: Float): Boolean =
         x < edgePx || x > width - edgePx || y > height - edgePx
 
@@ -363,6 +370,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         private const val CACHE_VER = "v6"
         private const val STATE_PAGE = "state_page"
         private const val STATE_FOLDER = "state_folder"
+        private const val LAUNCH_RESET_MS = 4000L
     }
 
     private val bg = Executors.newSingleThreadExecutor()
@@ -373,9 +381,13 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
+    /** Sab RecyclerView grids ke liye ek hi pool, memory aur bind dono bachte hain. */
+    private val sharedPool = RecyclerView.RecycledViewPool()
+
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
     private var launchToken: Any? = null
+    private var closeAnimPending = false
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -461,6 +473,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var searching = false
     private var depth = 0f
     private var launchAnim: ValueAnimator? = null
+    private var closeAnim: ValueAnimator? = null
     private var lastIconBlur = -1
     private var iconBlurOn = true
     private var listBottomGap = 0
@@ -507,6 +520,9 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun closeAnimEnabled(): Boolean =
+        getSharedPreferences("settings", MODE_PRIVATE).getBoolean("close_anim", true)
 
     private inner class GridGuide : RecyclerView.ItemDecoration() {
         var visible = false
@@ -564,7 +580,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             restoreWidgets()
             if (savedInstanceState != null) {
                 val pg = savedInstanceState.getInt(STATE_PAGE, 0)
-                currentPage = pg.coerceIn(0, pageCount - 1)
+                currentPage = pg.coerceIn(0, max(0, pageCount - 1))
                 val fid = savedInstanceState.getString(STATE_FOLDER)
                 if (fid != null && folders.containsKey(fid)) openFolder(fid)
             }
@@ -577,7 +593,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
             registerReceiver(packageReceiver, pkgFilter)
             showCachedApps()
-            loadApps()
+            // loadApps yahan nahi, sirf onResume mein (duplicate load se bachne ke liye)
         } catch (e: Exception) {
             Log.e(TAG, "onCreate failed", e)
         }
@@ -648,6 +664,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         dock = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, DOCK_SLOTS)
             adapter = dockAdapter
+            setRecycledViewPool(sharedPool)
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
             background = GradientDrawable().apply {
@@ -675,6 +692,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         drawerList = FadeRecycler(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, COLS)
             adapter = drawerAdapter
+            setRecycledViewPool(sharedPool)
             setHasFixedSize(true)
             setItemViewCacheSize(24)
             itemAnimator = null
@@ -767,6 +785,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         folderGrid = RecyclerView(this).apply {
             layoutManager = GridLayoutManager(this@MainActivity, 3)
             adapter = folderAdapter
+            setRecycledViewPool(sharedPool)
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
             clipToPadding = false
@@ -876,7 +895,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private fun loadPages() {
         val count = prefs.getInt("home_pages", 1).coerceIn(1, MAX_PAGES)
         pageCount = count
-        val saved = prefs.getString("home", "")!!.split("|")
+        val saved = (prefs.getString("home", "") ?: "").split("|")
         homeSlots.clear()
         for (i in 0 until count * PAGE_CELLS) {
             homeSlots.add(saved.getOrNull(i)?.takeIf { it.isNotEmpty() })
@@ -884,7 +903,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     private fun loadSlots(name: String, target: MutableList<String?>) {
-        val parts = prefs.getString(name, "")!!.split("|")
+        val parts = (prefs.getString(name, "") ?: "").split("|")
         for (i in target.indices) {
             target[i] = parts.getOrNull(i)?.takeIf { it.isNotEmpty() }
         }
@@ -902,6 +921,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 val grid = RecyclerView(this).apply {
                     layoutManager = GridLayoutManager(this@MainActivity, COLS)
                     this.adapter = adapter
+                    setRecycledViewPool(sharedPool)
                     overScrollMode = View.OVER_SCROLL_NEVER
                     itemAnimator = null
                     clipToPadding = false
@@ -979,7 +999,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun goToPage(p: Int, animated: Boolean) {
         try {
-            val target = p.coerceIn(0, pageCount - 1)
+            val target = p.coerceIn(0, max(0, pageCount - 1))
             currentPage = target
             updateDots()
             val end = -target * pageWidth()
@@ -1000,7 +1020,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     override fun isBusy(): Boolean =
-        launchAnim?.isRunning == true || anim?.isRunning == true || pageAnimator?.isRunning == true
+        launchAnim?.isRunning == true || anim?.isRunning == true || pageAnimator?.isRunning == true ||
+            closeAnim?.isRunning == true
 
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
@@ -1030,7 +1051,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 vx > 800f -> currentPage - 1
                 else -> Math.round(cur)
             }
-            goToPage(next.coerceIn(0, pageCount - 1), true)
+            goToPage(next.coerceIn(0, max(0, pageCount - 1)), true)
         } catch (e: Exception) {
             Log.e(TAG, "pageDragEnd", e)
         }
@@ -1049,7 +1070,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             while (pageCount > 1) {
                 val lastStart = (pageCount - 1) * PAGE_CELLS
                 if (lastStart + PAGE_CELLS > homeSlots.size) break
-                val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots[it] == null }
+                val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots.getOrNull(it) == null }
                 if (!empty) break
                 if (currentPage == pageCount - 1) break
                 repeat(PAGE_CELLS) { homeSlots.removeAt(homeSlots.size - 1) }
@@ -1380,7 +1401,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private fun loadFolders() {
         try {
             folders.clear()
-            prefs.getString("folders", "")!!.split("\n").filter { it.isNotEmpty() }.forEach { line ->
+            (prefs.getString("folders", "") ?: "").split("\n").filter { it.isNotEmpty() }.forEach { line ->
                 val p = line.split("\t")
                 if (p.size < 3) return@forEach
                 val keys = p[2].split("|").filter { it.isNotEmpty() }.toMutableList()
@@ -1443,7 +1464,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val pack = currentPack()
             val c = getSharedPreferences("app_cache", MODE_PRIVATE)
             if (c.getString("tag", "") != cacheTag()) return
-            val lines = c.getString("list", "")!!.split("\n").filter { it.isNotEmpty() }
+            val lines = (c.getString("list", "") ?: "").split("\n").filter { it.isNotEmpty() }
             val list = lines.mapNotNull { line ->
                 try {
                     val parts = line.split("\t")
@@ -1465,6 +1486,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    /** Cache save: sirf wahi icons likhta hai jo disk par nahi hain. */
     private fun saveCache(apps: List<AppItem>, pack: String) {
         try {
             for (a in apps) {
@@ -1851,6 +1873,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
         } catch (e: Exception) {
             Log.e(TAG, "bindWidget", e)
+            try { widgetHost.deleteAppWidgetId(pendingWidgetId) } catch (_: Exception) {}
         }
     }
 
@@ -1876,6 +1899,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
         } catch (e: Exception) {
             Log.e(TAG, "afterBind", e)
+            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
         }
     }
 
@@ -1914,7 +1938,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             hv.tag = id
             hv.setOnLongClickListener {
                 showSheet("Widget", null, listOf("Remove widget" to {
-                    widgetHost.deleteAppWidgetId(id)
+                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
                     widgetBox.removeView(hv)
                     saveWidgetIds()
                 }))
@@ -1926,6 +1950,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             })
         } catch (e: Exception) {
             Log.e(TAG, "addWidgetView", e)
+            try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
         }
     }
 
@@ -1942,7 +1967,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun restoreWidgets() {
         try {
-            val ids = prefs.getString("widget_ids", "")!!
+            val ids = (prefs.getString("widget_ids", "") ?: "")
                 .split(",").mapNotNull { it.toIntOrNull() }
             for (id in ids) {
                 try {
@@ -1950,7 +1975,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                     if (info != null) addWidgetView(id, info) else widgetHost.deleteAppWidgetId(id)
                 } catch (e: Exception) {
                     Log.e(TAG, "restore widget $id", e)
-                    widgetHost.deleteAppWidgetId(id)
+                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
                 }
             }
             saveWidgetIds()
@@ -2134,7 +2159,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             launchToken = token
             stage.postDelayed({
                 if (launchToken === token && pendingReturn) resetLaunch()
-            }, 4000)
+            }, LAUNCH_RESET_MS)
         } catch (e: Exception) {
             Log.e(TAG, "startApp", e)
             resetLaunch()
@@ -2151,6 +2176,31 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             stage.setLayerType(View.LAYER_TYPE_NONE, null)
         } catch (e: Exception) {
             Log.e(TAG, "resetLaunch", e)
+        }
+    }
+
+    /** App se wapas aane par chhota fade+scale-in (Settings: close_anim). */
+    private fun playCloseAnim() {
+        try {
+            if (!closeAnimEnabled()) return
+            closeAnim?.cancel()
+            stage.alpha = 0f
+            stage.scaleX = 0.96f
+            stage.scaleY = 0.96f
+            val a = ValueAnimator.ofFloat(0f, 1f)
+            a.duration = 220
+            a.interpolator = emphasized
+            a.addUpdateListener {
+                val v = it.animatedValue as Float
+                stage.alpha = v
+                val s = 0.96f + 0.04f * v
+                stage.scaleX = s
+                stage.scaleY = s
+            }
+            closeAnim = a
+            a.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "closeAnim", e)
         }
     }
 
@@ -2189,7 +2239,9 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     override fun onResume() {
         super.onResume()
         try {
+            val wasReturning = pendingReturn
             if (pendingReturn) resetLaunch()
+            if (wasReturning) playCloseAnim()
             enableHighRefresh()
             val sp = getSharedPreferences("settings", MODE_PRIVATE)
             fxBlur = sp.getBoolean("fx_blur", true)
@@ -2205,95 +2257,58 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    private fun applyDepth(d: Float) {
-        depth = d
-        val s = 1f + 0.14f * d
-        stage.scaleX = s
-        stage.scaleY = s
-        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
-        if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
-            val step = if (d > 0.5f) 8 else 0
-            if (step != lastIconBlur) {
-                lastIconBlur = step
-                setIconBlur(step)
-            }
+    override fun onPause() {
+        super.onPause()
+        try {
+            // Recents/app switch se pehle blur aur animations band: kam kaam, kam lag
+            lastHomeBlur = -1
+            lastStageBlur = -1
+            home.setRenderEffect(null)
+            stage.setRenderEffect(null)
+            pageAnimator?.cancel()
+            folderAnim?.cancel()
+            closeAnim?.cancel()
+        } catch (e: Exception) {
+            Log.e(TAG, "onPause", e)
         }
     }
 
-    private fun dist() = maxOf(1f, root.height * 0.5f)
-
-    override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
-        if (dragLock || folderOpen) return false
-        return if (progress > 0.5f) dy > 0 && !drawerList.canScrollVertically(-1) else dy < 0
-    }
-
-    override fun onDragStart() {
-        anim?.cancel()
-        dragBase = progress
-        setLayers(true)
-    }
-
-    override fun onDrag(dy: Float) {
-        setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
-    }
-
-    override fun onDragEnd(vy: Float) {
-        val v = -vy / dist()
-        val open = when {
-            v > 0.6f -> true
-            v < -0.6f -> false
-            else -> progress > 0.5f
-        }
-        animateProgress(if (open) 1f else 0f, v)
-    }
-
-    private fun animateProgress(target: Float, velocity: Float) {
+    override fun onStop() {
+        super.onStop()
         try {
             anim?.cancel()
-            setLayers(true)
-            val a = SpringAnimation(FloatValueHolder(progress))
-            a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
-            a.setStartVelocity(velocity)
-            a.setMinimumVisibleChange(1f / 256f)
-            a.addUpdateListener { _, value, _ -> setProgress(value.coerceIn(0f, 1f)) }
-            a.addEndListener { _, canceled, _, _ ->
-                if (!canceled) {
-                    setProgress(target)
-                    setLayers(false)
-                }
-            }
-            anim = a
-            a.start()
+            widgetHost.stopListening()
         } catch (e: Exception) {
-            Log.e(TAG, "animateProgress", e)
+            Log.e(TAG, "widget stop", e)
         }
     }
 
-    private fun setProgress(p: Float) {
+    override fun onStart() {
+        super.onStart()
         try {
-            progress = p
-            val h = root.height.toFloat()
-            drawer.alpha = p
-            drawer.translationY = (1f - p) * 0.25f * h
-            home.alpha = 1f - p
-            val s = 1f - 0.08f * p
-            home.scaleX = s
-            home.scaleY = s
-            applyHomeBlur(p)
-            val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
-            if (drawer.visibility != dv) drawer.visibility = dv
-            val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
-            if (home.visibility != hv) home.visibility = hv
-            if (p < 0.001f && searching) setSearchMode(false)
+            widgetHost.startListening()
         } catch (e: Exception) {
-            Log.e(TAG, "setProgress", e)
+            Log.e(TAG, "widget start", e)
         }
     }
 
-    private fun setLayers(on: Boolean) {
-        val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
-        home.setLayerType(t, null)
-        drawer.setLayerType(t, null)
+    @Deprecated("Use onTrimMemory", level = DeprecationLevel.HIDDEN)
+    private fun unusedMarker() {}
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        try {
+            if (level >= TRIM_MEMORY_RUNNING_LOW) {
+                iconLru.evictAll()
+                folderIconCache = null
+                folderIconKey = ""
+            }
+            if (level >= TRIM_MEMORY_UI_HIDDEN) {
+                sharedPool.clear()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "trim", e)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -2308,24 +2323,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        try {
-            widgetHost.startListening()
-        } catch (e: Exception) {
-            Log.e(TAG, "widget start", e)
-        }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        try {
-            widgetHost.stopListening()
-        } catch (e: Exception) {
-            Log.e(TAG, "widget stop", e)
-        }
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         try {
@@ -2336,8 +2333,25 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             unregisterReceiver(packageReceiver)
         } catch (e: Exception) {
         }
+        try {
+            stage.removeCallbacks(null)
+            pageAnimator?.cancel()
+            anim?.cancel()
+            folderAnim?.cancel()
+            launchAnim?.cancel()
+            closeAnim?.cancel()
+            pageAnimator = null
+            anim = null
+            folderAnim = null
+            launchAnim = null
+            closeAnim = null
+        } catch (e: Exception) {
+            Log.e(TAG, "destroyCancel", e)
+        }
         bg.shutdownNow()
         iconLru.evictAll()
+        folderIconCache = null
+        sharedPool.clear()
     }
 }
 
@@ -2449,7 +2463,9 @@ class AppAdapter(
             }
 
             h.icon.visibility = View.VISIBLE
-            h.icon.setImageBitmap(item.icon)
+            if (h.icon.drawable?.let { (it as? android.graphics.drawable.BitmapDrawable)?.bitmap } !== item.icon) {
+                h.icon.setImageBitmap(item.icon)
+            }
 
             val showText = showLabel && style.labels
             h.label.visibility = if (showText) View.VISIBLE else View.GONE
