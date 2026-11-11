@@ -381,7 +381,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
             pageDragging = false
             crossing = false
         }
-
+        }
+}
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
         return dragging || pageDragging || crossing
