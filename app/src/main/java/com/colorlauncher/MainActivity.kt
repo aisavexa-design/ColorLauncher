@@ -277,7 +277,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private fun inEdge(x: Float, y: Float): Boolean =
         x < edgePx || x > width - edgePx || y > height - edgePx
 
-    private fun track(e: MotionEvent) {
+        private fun track(e: MotionEvent) {
         if (e.eventTime == lastEventTime && e.actionMasked == lastAction) return
         lastEventTime = e.eventTime
         lastAction = e.actionMasked
@@ -297,13 +297,15 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
-                    if (downItem != null) postDelayed(armRunnable, 700L)
-                    if (!ignoring) postDelayed(longPressRunnable, 800L)
+                    if (downItem != null) postDelayed(armRunnable, 1000L)
+                    if (!ignoring) postDelayed(longPressRunnable, 500L)
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    val moved = abs(e.x - downX) > slop || abs(e.y - downY) > slop
+                    if (moved) removeCallbacks(longPressRunnable)
                     if (crossing) {
                         host.onCrossMove(e.rawX, e.rawY)
                         return
@@ -313,7 +315,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     val dy = e.y - downY
                     val dx = e.x - downX
                     if (!dragging && !pageDragging) {
-                        if (abs(dy) > slop || abs(dx) > slop) removeCallbacks(longPressRunnable)
                         val item = downItem
                         if (item != null && armed && dy < -slop * 2 && abs(dy) > abs(dx) * 2) {
                             removeCallbacks(longPressRunnable)
@@ -380,7 +381,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
             pageDragging = false
             crossing = false
         }
-    }
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
