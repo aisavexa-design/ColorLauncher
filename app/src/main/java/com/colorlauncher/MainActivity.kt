@@ -122,7 +122,7 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-class ShapeIcon(ctx: Context) : android.widget.ImageView(ctx) {
+class ShapeIcon(ctx: Context) : ImageView(ctx) {
     var shape = 0
         set(v) {
             if (field == v) return
@@ -215,6 +215,10 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
     }
 }
 
+/**
+ * Touch layer. Drawer ke app par 200ms hold ke baad upar khinchne par cross-drag shuru hota hai.
+ * Left, right, bottom edge ke touches intercept nahi hote (system gesture ke liye).
+ */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
@@ -227,6 +231,10 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         fun onPageDrag(dx: Float)
         fun onPageDragEnd(vx: Float)
         fun isBusy(): Boolean
+        fun itemAtRaw(rawX: Float, rawY: Float): AppItem?
+        fun onCrossStart(item: AppItem, rawX: Float, rawY: Float)
+        fun onCrossMove(rawX: Float, rawY: Float)
+        fun onCrossEnd(rawX: Float, rawY: Float)
     }
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
@@ -239,11 +247,14 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private var pageDragging = false
     private var longFired = false
     private var ignoring = false
+    private var crossing = false
+    private var armed = false
+    private var downItem: AppItem? = null
     private var vt: VelocityTracker? = null
 
     private val longPressRunnable = Runnable {
         try {
-            if (!dragging && !pageDragging && !longFired && !ignoring) {
+            if (!dragging && !pageDragging && !longFired && !ignoring && !crossing) {
                 longFired = true
                 host.onEmptyLongPress(rawDownX, rawDownY)
             }
@@ -252,10 +263,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         }
     }
 
+    private val armRunnable = Runnable { armed = true }
+
     private fun cancelLong() = removeCallbacks(longPressRunnable)
 
     override fun onDetachedFromWindow() {
         removeCallbacks(longPressRunnable)
+        removeCallbacks(armRunnable)
         vt?.recycle()
         vt = null
         super.onDetachedFromWindow()
@@ -275,20 +289,37 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     dragging = false
                     pageDragging = false
                     longFired = false
+                    crossing = false
+                    armed = false
+                    downItem = host.itemAtRaw(e.rawX, e.rawY)
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     cancelLong()
+                    removeCallbacks(armRunnable)
+                    if (downItem != null) postDelayed(armRunnable, 200L)
                     if (!ignoring) postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (crossing) {
+                        host.onCrossMove(e.rawX, e.rawY)
+                        return
+                    }
                     if (ignoring) return
                     vt?.addMovement(e)
                     val dy = e.y - downY
                     val dx = e.x - downX
                     if (!dragging && !pageDragging) {
                         if (abs(dy) > slop || abs(dx) > slop) cancelLong()
+                        val item = downItem
+                        if (item != null && armed && dy < -slop && abs(dy) > abs(dx)) {
+                            cancelLong()
+                            crossing = true
+                            host.onCrossStart(item, e.rawX, e.rawY)
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                            return
+                        }
                         if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
                             cancelLong()
                             dragging = true
@@ -309,6 +340,16 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     cancelLong()
+                    removeCallbacks(armRunnable)
+                    armed = false
+                    if (crossing) {
+                        crossing = false
+                        downItem = null
+                        host.onCrossEnd(e.rawX, e.rawY)
+                        vt?.recycle()
+                        vt = null
+                        return
+                    }
                     if (ignoring) {
                         ignoring = false
                         return
@@ -326,6 +367,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     }
                     dragging = false
                     pageDragging = false
+                    downItem = null
                     vt?.recycle()
                     vt = null
                 }
@@ -334,12 +376,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
             Log.e(TAG, "gesture", e)
             dragging = false
             pageDragging = false
+            crossing = false
         }
     }
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
-        return dragging || pageDragging
+        return dragging || pageDragging || crossing
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -364,6 +407,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         private const val STATE_PAGE = "state_page"
         private const val STATE_FOLDER = "state_folder"
         private const val LAUNCH_RESET_MS = 4000L
+        private const val SNAP_FILE = "snap.png"
     }
 
     private val bg = Executors.newSingleThreadExecutor()
@@ -379,6 +423,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var folderIconKey = ""
     private var launchToken: Any? = null
     private var returningFromApp = false
+
+    private var crossItem: AppItem? = null
+    private var ghost: ImageView? = null
+    private var crossRootTop = 0
+    private var barOver = false
+    private var snapView: ImageView? = null
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -399,6 +449,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private lateinit var titleView: TextView
     private lateinit var searchBox: EditText
     private lateinit var removeZone: TextView
+    private lateinit var addBar: TextView
     private lateinit var dockAdapter: AppAdapter
     private lateinit var drawerAdapter: AppAdapter
     private lateinit var folderLayer: FrameLayout
@@ -540,6 +591,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             loadFolders()
             buildViews()
             setContentView(root)
+            showSnapshot()
             onBackPressedDispatcher.addCallback(this, backCallback)
             setProgress(0f)
             applyClock()
@@ -612,7 +664,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     override fun onStop() {
         super.onStop()
         try {
-            if (pendingReturn) returningFromApp = true
+            if (pendingReturn) returningFromApp = true else captureSnapshot()
             anim?.cancel()
             widgetHost.stopListening()
         } catch (e: Exception) {
@@ -719,6 +771,64 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    // ---------------- Snapshot (item 7: crash ke time fake home) ----------------
+
+    private fun captureSnapshot() {
+        try {
+            val w = root.width
+            val h = root.height
+            if (w <= 0 || h <= 0) return
+            val s = 0.5f
+            val bmp = Bitmap.createBitmap((w * s).toInt(), (h * s).toInt(), Bitmap.Config.RGB_565)
+            val c = Canvas(bmp)
+            c.scale(s, s)
+            val ov = overlay.visibility
+            overlay.visibility = View.GONE
+            val ss = stage.scaleX
+            val sa = stage.alpha
+            stage.scaleX = 1f
+            stage.scaleY = 1f
+            stage.alpha = 1f
+            root.draw(c)
+            stage.scaleX = ss
+            stage.scaleY = ss
+            stage.alpha = sa
+            overlay.visibility = ov
+            val out = File(filesDir, SNAP_FILE)
+            bg.execute {
+                try {
+                    FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) }
+                } catch (e: Exception) {
+                    Log.e(TAG, "snapWrite", e)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "captureSnapshot", e)
+        }
+    }
+
+    private fun showSnapshot() {
+        try {
+            val f = File(filesDir, SNAP_FILE)
+            if (!f.exists()) return
+            val bmp = BitmapFactory.decodeFile(f.path) ?: return
+            val iv = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_XY
+                setImageBitmap(bmp)
+            }
+            root.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
+            snapView = iv
+            root.post {
+                iv.animate().alpha(0f).setDuration(180).withEndAction {
+                    try { root.removeView(iv) } catch (_: Exception) {}
+                    if (snapView === iv) snapView = null
+                }.start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "showSnapshot", e)
+        }
+    }
+
     // ---------------- Views ----------------
 
     private fun setupWindow() {
@@ -738,7 +848,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun buildViews() {
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
-        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it) })
+        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, null)
 
         clock = TextClock(this).apply {
             format12Hour = "h:mm"
@@ -935,6 +1045,22 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         root.addView(stage, MATCH, MATCH)
         root.addView(folderLayer, MATCH, MATCH)
 
+        addBar = TextView(this).apply {
+            text = "Drop here to add to Home"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(0xCC22C55E.toInt())
+            }
+            visibility = View.GONE
+            alpha = 0f
+        }
+        root.addView(addBar, FrameLayout.LayoutParams(MATCH, dp(56), Gravity.TOP).apply {
+            setMargins(dp(16), dp(8), dp(16), 0)
+        })
+
         overlay = LaunchOverlay(this).apply {
             visibility = View.GONE
             isClickable = true
@@ -959,6 +1085,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
             header.requestLayout()
             (removeZone.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
+            (addBar.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
             drawerList.setPadding(dp(8), top + dp(64), dp(8), ime)
             listBottomGap = bottom + dp(24)
             drawerList.invalidateItemDecorations()
@@ -1233,7 +1360,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Drag and drop ----------------
+    // ---------------- Drag and drop (home) ----------------
 
     private fun isFolder(k: String?) = k != null && k.startsWith(FOLDER_PREFIX)
 
@@ -1389,7 +1516,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Drawer progress and page swipe (Host) ----------------
+    // ---------------- Drawer progress, page swipe, long press (Host) ----------------
 
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock || folderOpen) return false
@@ -1418,8 +1545,19 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     override fun onEmptyLongPress(rawX: Float, rawY: Float) {
         try {
-            if (progress > 0.01f || pendingReturn || folderOpen) return
-            if (isOnAnyItem(rawX, rawY)) return
+            if (pendingReturn || folderOpen) return
+            if (progress > 0.5f) {
+                val item = itemAtRaw(rawX, rawY) ?: return
+                waveFrom(drawerList, rawX, rawY)
+                window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showMenu(item)
+                return
+            }
+            if (progress > 0.01f) return
+            if (isOnAnyItem(rawX, rawY)) {
+                pageGrids.getOrNull(currentPage)?.let { waveFrom(it, rawX, rawY) }
+                return
+            }
             if (inside(widgetBox, rawX, rawY)) return
             window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             showHomeMenu()
@@ -1463,6 +1601,185 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             goToPage(next.coerceIn(0, max(0, pageCount - 1)), true)
         } catch (e: Exception) {
             Log.e(TAG, "pageDragEnd", e)
+        }
+    }
+
+    /** Drawer ke andar us point par app (sirf jab drawer khula ho). */
+    override fun itemAtRaw(rawX: Float, rawY: Float): AppItem? {
+        try {
+            if (folderOpen || progress < 0.5f) return null
+            val loc = IntArray(2)
+            drawerList.getLocationOnScreen(loc)
+            val child = drawerList.findChildViewUnder(rawX - loc[0], rawY - loc[1]) ?: return null
+            val pos = drawerList.getChildAdapterPosition(child)
+            if (pos == RecyclerView.NO_POSITION) return null
+            return drawerAdapter.itemAt(pos)
+        } catch (e: Exception) {
+            Log.e(TAG, "itemAtRaw", e)
+            return null
+        }
+    }
+
+    // ---------------- Item 1: drawer se cross-drag ----------------
+
+    override fun onCrossStart(item: AppItem, rawX: Float, rawY: Float) {
+        try {
+            crossItem = item
+            barOver = false
+            val loc = IntArray(2)
+            root.getLocationOnScreen(loc)
+            crossRootTop = loc[1]
+            val g = ImageView(this).apply {
+                setImageBitmap(item.icon)
+                alpha = 0.95f
+                elevation = dp(8).toFloat()
+            }
+            root.addView(g, FrameLayout.LayoutParams(dp(64), dp(64)))
+            ghost = g
+            moveGhost(rawX, rawY)
+            showAddBar(true)
+            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        } catch (e: Exception) {
+            Log.e(TAG, "crossStart", e)
+        }
+    }
+
+    override fun onCrossMove(rawX: Float, rawY: Float) {
+        try {
+            moveGhost(rawX, rawY)
+            val over = inside(addBar, rawX, rawY)
+            if (over != barOver) {
+                barOver = over
+                val s = if (over) 1.06f else 1f
+                addBar.animate().scaleX(s).scaleY(s).setDuration(160).start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "crossMove", e)
+        }
+    }
+
+    override fun onCrossEnd(rawX: Float, rawY: Float) {
+        try {
+            val item = crossItem
+            crossItem = null
+            val dropped = item != null && inside(addBar, rawX, rawY)
+            showAddBar(false)
+            barOver = false
+            ghost?.let { g ->
+                ghost = null
+                g.animate().alpha(0f).scaleX(0.6f).scaleY(0.6f).setDuration(200).withEndAction {
+                    try { root.removeView(g) } catch (_: Exception) {}
+                }.start()
+            }
+            if (dropped && item != null) {
+                addTo(homeSlots, item.key, "Home")
+                animateProgress(0f, 0f)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "crossEnd", e)
+        }
+    }
+
+    private fun moveGhost(rawX: Float, rawY: Float) {
+        ghost?.let {
+            it.translationX = rawX - dp(32)
+            it.translationY = rawY - dp(32) - crossRootTop
+        }
+    }
+
+    private fun showAddBar(show: Boolean) {
+        try {
+            addBar.animate().cancel()
+            if (show) {
+                addBar.visibility = View.VISIBLE
+                addBar.translationY = -dp(40).toFloat()
+                addBar.animate().translationY(0f).alpha(1f).setDuration(260)
+                    .setInterpolator(OvershootInterpolator(1.2f)).start()
+            } else {
+                addBar.animate().translationY(-dp(40).toFloat()).alpha(0f).setDuration(200)
+                    .withEndAction { addBar.visibility = View.GONE }.start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "addBar", e)
+        }
+    }
+
+    // ---------------- Item 6: lehar (wave) ----------------
+
+    private fun waveFrom(rv: RecyclerView, rawX: Float, rawY: Float) {
+        try {
+            val loc = IntArray(2)
+            for (i in 0 until rv.childCount) {
+                val v = rv.getChildAt(i)
+                v.getLocationOnScreen(loc)
+                val cx = loc[0] + v.width / 2f
+                val cy = loc[1] + v.height / 2f
+                val d = Math.hypot((cx - rawX).toDouble(), (cy - rawY).toDouble()).toFloat()
+                val delay = (d * 0.35f).toLong().coerceAtMost(420L)
+                v.animate().cancel()
+                v.animate().scaleX(0.9f).scaleY(0.9f).setStartDelay(delay).setDuration(120)
+                    .setInterpolator(DecelerateInterpolator())
+                    .withEndAction {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(320)
+                            .setInterpolator(OvershootInterpolator(2f)).start()
+                    }.start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "wave", e)
+        }
+    }
+
+    // ---------------- Search (item 3: rubber rows, niche se) ----------------
+
+    private fun setSearchMode(on: Boolean) {
+        try {
+            searching = on
+            titleView.visibility = if (on) View.GONE else View.VISIBLE
+            searchBox.visibility = if (on) View.VISIBLE else View.GONE
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            playRows(on)
+            if (on) {
+                searchBox.alpha = 0f
+                searchBox.translationY = dp(24).toFloat()
+                searchBox.animate().alpha(1f).translationY(0f).setDuration(320).setInterpolator(emphasized).start()
+                searchBox.requestFocus()
+                imm.showSoftInput(searchBox, 0)
+            } else {
+                searchBox.setText("")
+                imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "search", e)
+        }
+    }
+
+    /** Har row ek ek karke neeche se rubber (overshoot) ke saath aati hai. */
+    private fun playRows(show: Boolean) {
+        val rv = drawerList
+        for (i in 0 until rv.childCount) {
+            val v = rv.getChildAt(i)
+            val pos = rv.getChildAdapterPosition(v)
+            val row = if (pos == RecyclerView.NO_POSITION) 0 else pos / COLS
+            v.animate().cancel()
+            if (show) {
+                v.translationY = dp(120).toFloat()
+                v.alpha = 0f
+                v.animate().translationY(0f).alpha(1f).setStartDelay(row * 48L).setDuration(560)
+                    .setInterpolator(OvershootInterpolator(1.35f)).start()
+            } else {
+                v.animate().translationY(dp(80).toFloat()).alpha(0f).setStartDelay(row * 20L).setDuration(200)
+                    .setInterpolator(emphasized)
+                    .withEndAction { v.translationY = 0f; v.alpha = 1f }
+                    .start()
+            }
+        }
+    }
+
+    private fun filterApps(q: String) {
+        try {
+            drawerAdapter.submitDiff(if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) })
+        } catch (e: Exception) {
+            Log.e(TAG, "filterApps", e)
         }
     }
 
@@ -1514,40 +1831,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         val t = if (on) View.LAYER_TYPE_HARDWARE else View.LAYER_TYPE_NONE
         home.setLayerType(t, null)
         drawer.setLayerType(t, null)
-    }
-
-    // ---------------- Search (item 3: niche se aata hai) ----------------
-
-    private fun setSearchMode(on: Boolean) {
-        try {
-            searching = on
-            titleView.visibility = if (on) View.GONE else View.VISIBLE
-            searchBox.visibility = if (on) View.VISIBLE else View.GONE
-            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
-            if (on) {
-                searchBox.alpha = 0f
-                searchBox.translationY = dp(16).toFloat()
-                searchBox.animate().alpha(1f).translationY(0f).setDuration(260).setInterpolator(emphasized).start()
-                drawerList.translationY = dp(40).toFloat()
-                drawerList.animate().translationY(0f).setDuration(300).setInterpolator(emphasized).start()
-                searchBox.requestFocus()
-                imm.showSoftInput(searchBox, 0)
-            } else {
-                searchBox.setText("")
-                drawerList.translationY = 0f
-                imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "search", e)
-        }
-    }
-
-    private fun filterApps(q: String) {
-        try {
-            drawerAdapter.submitDiff(if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) })
-        } catch (e: Exception) {
-            Log.e(TAG, "filterApps", e)
-        }
     }
 
     // ---------------- Folder ----------------
@@ -1624,7 +1907,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val id = currentFolderId ?: return
             val f = folders[id] ?: return
             folderTitle.text = f.name
-            folderAdapter.submitDiff(f.keys.map { buildMap()[it] })
+            val map = buildMap()
+            folderAdapter.submitDiff(f.keys.map { map[it] })
         } catch (e: Exception) {
             Log.e(TAG, "folderPopup", e)
         }
@@ -1839,7 +2123,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Sirf wahi app jo system ka nahi hai, ya update hua system app (Samsung) bhi. */
+    /** User app ya update hua system app (Samsung) ko uninstall allow. */
     private fun isUserApp(pkg: String): Boolean = try {
         val ai = packageManager.getApplicationInfo(pkg, 0)
         (ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
@@ -1847,15 +2131,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         false
     }
 
-    /** Uninstall: pehle ACTION_DELETE, agar koi handler na mile to App info kholo. */
+    /** Uninstall: pehle ACTION_DELETE, handler na mile to App info. */
     private fun uninstallApp(pkg: String) {
         try {
             val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg"))
-            if (intent.resolveActivity(packageManager) != null) {
-                startActivity(intent)
-            } else {
-                openAppInfo(pkg)
-            }
+            if (intent.resolveActivity(packageManager) != null) startActivity(intent) else openAppInfo(pkg)
         } catch (e: Exception) {
             Log.e(TAG, "uninstall", e)
             openAppInfo(pkg)
@@ -1915,17 +2195,16 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 setGravity(Gravity.BOTTOM)
                 setLayout(MATCH, WRAP)
                 setDimAmount(0.4f)
-                setWindowAnimations(android.R.style.Animation_InputMethod)
             }
-            // Box animation: card icon ke andar se scale-up hota hai
-            card.pivotX = card.width / 2f
-            card.pivotY = dp(60).toFloat()
-            card.scaleX = 0.7f
-            card.scaleY = 0.7f
-            card.alpha = 0f
+            // Box animation: card icon ki taraf se scale-up hota hai
             d.setOnShowListener {
+                card.pivotX = card.width / 2f
+                card.pivotY = dp(56).toFloat()
+                card.scaleX = 0.6f
+                card.scaleY = 0.6f
+                card.alpha = 0f
                 card.animate().scaleX(1f).scaleY(1f).alpha(1f)
-                    .setDuration(260).setInterpolator(OvershootInterpolator(0.8f)).start()
+                    .setDuration(280).setInterpolator(OvershootInterpolator(1.1f)).start()
             }
             d.show()
         } catch (e: Exception) {
@@ -1995,8 +2274,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    /** Item 5: animation poora hone ke baad app start, drawer band, home ready. */
     private fun startApp(item: AppItem) {
         try {
+            setProgress(0f)
+            captureSnapshot()
             val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
             closeFolderInstant()
@@ -2024,7 +2306,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Item 4: app band hone par home icons ka smooth stagger. */
+    /** Item 4: app se wapas aane par launcher ka fade-in. */
     private fun playCloseAnim() {
         try {
             if (!closeAnimEnabled()) return
@@ -2069,9 +2351,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
         a.addListener(object : AnimatorListenerAdapter() {
             private var cancelled = false
-            override fun onAnimationCancel(animation: Animator) {
-                cancelled = true
-            }
+            override fun onAnimationCancel(animation: Animator) { cancelled = true }
             override fun onAnimationEnd(animation: Animator) {
                 if (!cancelled) {
                     stage.setLayerType(View.LAYER_TYPE_NONE, null)
@@ -2087,6 +2367,9 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         Bitmap.createScaledBitmap(b, 1, 1, true).getPixel(0, 0) or 0xFF000000.toInt()
 
     // ---------------- Apps, cache, icons ----------------
+
+    private fun currentPack(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
 
     private fun applyClock() {
         try {
@@ -2141,9 +2424,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "persist", e)
         }
     }
-
-    private fun currentPack(): String =
-        getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
 
     private fun makeIntent(cn: ComponentName): Intent =
         Intent(Intent.ACTION_MAIN)
@@ -2346,8 +2626,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         updateDots()
         if (folderOpen) refreshFolderPopup()
     }
-
-    private fun applyHomeBlurUnused() {}
 }
 
 data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean, val gapH: Int, val gapV: Int)
@@ -2376,121 +2654,4 @@ class AppAdapter(
 
     fun submit(list: List<AppItem?>) {
         items = list.toList()
-        notifyDataSetChanged()
-    }
-
-    fun submitDiff(list: List<AppItem?>) {
-        val old = items
-        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-            override fun getOldListSize() = old.size
-            override fun getNewListSize() = list.size
-            override fun areItemsTheSame(o: Int, n: Int) = old[o]?.key == list[n]?.key
-            override fun areContentsTheSame(o: Int, n: Int): Boolean {
-                val a = old[o]
-                val b = list[n]
-                return a?.key == b?.key && a?.label == b?.label && a?.icon === b?.icon
-            }
-        })
-        items = list.toList()
-        diff.dispatchUpdatesTo(this)
-    }
-
-    fun applyStyle(s: IconStyle) {
-        style = s
-        notifyDataSetChanged()
-    }
-
-    fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
-
-    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) : RecyclerView.ViewHolder(root)
-
-    override fun getItemId(position: Int): Long =
-        items.getOrNull(position)?.key?.hashCode()?.toLong() ?: (1_000_000_000L + position)
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-        val ctx = parent.context
-        val d = ctx.resources.displayMetrics.density
-        val icon = ShapeIcon(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt())
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        val label = TextView(ctx).apply {
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 11f
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            maxLines = 1
-            gravity = Gravity.CENTER
-            setPadding(0, (6 * d).toInt(), 0, 0)
-        }
-        val root = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
-            addView(icon)
-            addView(label)
-        }
-        return VH(root, icon, label)
-    }
-
-    override fun onBindViewHolder(h: VH, position: Int) {
-        try {
-            val d = h.root.resources.displayMetrics.density
-            val px = (style.sizeDp * d).toInt()
-            val lp = h.icon.layoutParams
-            if (lp.width != px || lp.height != px) {
-                lp.width = px
-                lp.height = px
-                h.icon.layoutParams = lp
-            }
-            h.icon.shape = style.shape
-
-            val item = items.getOrNull(position)
-            if (item == null) {
-                h.icon.setImageDrawable(null)
-                h.icon.visibility = View.INVISIBLE
-                h.label.visibility = View.GONE
-                h.root.setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
-                h.root.setOnClickListener(null)
-                h.root.setOnLongClickListener(null)
-                h.root.setOnTouchListener(null)
-                return
-            }
-
-            h.icon.visibility = View.VISIBLE
-            val current = (h.icon.drawable as? BitmapDrawable)?.bitmap
-            if (current !== item.icon) h.icon.setImageBitmap(item.icon)
-
-            val showText = showLabel && style.labels
-            h.label.visibility = if (showText) View.VISIBLE else View.GONE
-            h.label.text = item.label
-
-            val vPad = if (showText) 12 else 8
-            h.root.setPadding(0, (vPad * d).toInt(), 0, (vPad * d).toInt())
-
-            h.root.setOnClickListener { onClick(h.icon, item) }
-            if (onLong != null) {
-                h.root.setOnLongClickListener {
-                    onLong.invoke(item)
-                    true
-                }
-            } else {
-                h.root.setOnLongClickListener(null)
-            }
-            h.root.setOnTouchListener { _, e ->
-                when (e.action) {
-                    MotionEvent.ACTION_DOWN ->
-                        h.root.animate().scaleX(0.92f).scaleY(0.92f).setDuration(80)
-                            .setInterpolator(DecelerateInterpolator()).start()
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                        h.root.animate().scaleX(1f).scaleY(1f).setDuration(220)
-                            .setInterpolator(OvershootInterpolator(2f)).start()
-                }
-                false
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "bind $position", e)
-        }
-    }
-
-    override fun getItemCount() = items.size
-}
+        notifyDataSetCha
