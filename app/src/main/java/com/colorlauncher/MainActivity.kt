@@ -3,7 +3,6 @@ package com.colorlauncher
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.annotation.TargetApi
 import android.app.ActivityOptions
 import android.app.Dialog
 import android.appwidget.AppWidgetHost
@@ -27,8 +26,6 @@ import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
@@ -125,7 +122,7 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-class ShapeIcon(ctx: Context) : ImageView(ctx) {
+class ShapeIcon(ctx: Context) : android.widget.ImageView(ctx) {
     var shape = 0
         set(v) {
             if (field == v) return
@@ -185,14 +182,11 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
             from.bottom + (h - from.bottom) * tt
         )
         sheet.color = color
-        sheet.alpha = 255
         val rad = iconCorner + (screenCorner - iconCorner) * tt
         canvas.drawRoundRect(cur, rad, rad, sheet)
         val bmp = icon ?: return
         val half = from.width() / 2f
-        val cx = cur.centerX()
-        val cy = cur.centerY()
-        dst.set(cx - half, cy - half, cx + half, cy + half)
+        dst.set(cur.centerX() - half, cur.centerY() - half, cur.centerX() + half, cur.centerY() + half)
         canvas.drawBitmap(bmp, null, dst, iconPaint)
     }
 }
@@ -283,9 +277,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     longFired = false
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     cancelLong()
-                    if (!ignoring) {
-                        postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
-                    }
+                    if (!ignoring) postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
@@ -368,21 +360,20 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val CACHE_VER = "v6"
+        private const val CACHE_VER = "v7"
         private const val STATE_PAGE = "state_page"
         private const val STATE_FOLDER = "state_folder"
         private const val LAUNCH_RESET_MS = 4000L
     }
 
     private val bg = Executors.newSingleThreadExecutor()
-
     private val iconLru = object : LruCache<String, Bitmap>(
         (Runtime.getRuntime().maxMemory() / 24).toInt().coerceIn(6 * 1024 * 1024, 20 * 1024 * 1024)
     ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
-
     private val sharedPool = RecyclerView.RecycledViewPool()
+    private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
 
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
@@ -431,14 +422,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var dragLock = false
     private var drawerGapH = 8
     private var drawerGapV = 12
+    private var listBottomGap = 0
 
-    private var fxBlur = true
     private var fxIntro = true
     private var pageAnim = true
     private var introPending = true
-    private var lastHomeBlur = -1
-    private var lastStageBlur = -1
-
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
@@ -469,25 +457,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var dragBase = 0f
     private var anim: SpringAnimation? = null
     private var pendingReturn = false
-
     private var searching = false
     private var depth = 0f
     private var launchAnim: ValueAnimator? = null
     private var closeAnim: ValueAnimator? = null
-    private var lastIconBlur = -1
-    private var iconBlurOn = true
-    private var listBottomGap = 0
-    private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
-
-    private val homeBlurFx: Array<RenderEffect?> by lazy {
-        Array(13) { s -> if (s == 0) null else blurEffect(dp(18) * s / 12f) }
-    }
-    private val stageBlurFx: Array<RenderEffect?> by lazy {
-        Array(13) { s -> if (s == 0) null else blurEffect(dp(20) * s / 12f) }
-    }
-    private val iconBlurFx: Array<RenderEffect?> by lazy {
-        Array(9) { s -> if (s == 0) null else blurEffect(dp(8) * s / 8f) }
-    }
+    private var menuAnim: ValueAnimator? = null
 
     private val userPresentReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -505,7 +479,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             try {
-                Log.i(TAG, "package change: ${i.action} ${i.data}")
                 loadApps()
             } catch (e: Exception) {
                 Log.e(TAG, "packageReceiver", e)
@@ -543,19 +516,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 val left = parent.paddingLeft.toFloat()
                 val right = (parent.width - parent.paddingRight).toFloat()
                 val cw = (right - left) / COLS
-                val rows = PAGE_CELLS / COLS
                 val inset = dp(4).toFloat()
-                for (row in 0 until rows) {
-                    for (col in 0 until COLS) {
-                        val top = parent.paddingTop + row * rowH
-                        r.set(
-                            left + col * cw + inset,
-                            top + inset,
-                            left + (col + 1) * cw - inset,
-                            top + rowH - inset
-                        )
-                        c.drawRoundRect(r, dp(16).toFloat(), dp(16).toFloat(), paint)
-                    }
+                for (row in 0 until PAGE_CELLS / COLS) for (col in 0 until COLS) {
+                    val top = parent.paddingTop + row * rowH
+                    r.set(left + col * cw + inset, top + inset, left + (col + 1) * cw - inset, top + rowH - inset)
+                    c.drawRoundRect(r, dp(16).toFloat(), dp(16).toFloat(), paint)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "guide draw", e)
@@ -581,8 +546,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             applyDockStyle()
             restoreWidgets()
             if (savedInstanceState != null) {
-                val pg = savedInstanceState.getInt(STATE_PAGE, 0)
-                currentPage = pg.coerceIn(0, max(0, pageCount - 1))
+                currentPage = savedInstanceState.getInt(STATE_PAGE, 0).coerceIn(0, max(0, pageCount - 1))
                 val fid = savedInstanceState.getString(STATE_FOLDER)
                 if (fid != null && folders.containsKey(fid)) openFolder(fid)
             }
@@ -617,15 +581,17 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             if (pendingReturn) resetLaunch()
             enableHighRefresh()
             val sp = getSharedPreferences("settings", MODE_PRIVATE)
-            fxBlur = sp.getBoolean("fx_blur", true)
             fxIntro = sp.getBoolean("fx_intro", true)
             pageAnim = sp.getBoolean("page_anim", true)
             applyIconStyle()
             applyClock()
             applyDockStyle()
             if (!appsLoaded || currentPack() != loadedPack) loadApps()
+            if (wasReturning) {
+                introPending = true
+                playCloseAnim()
+            }
             runIntroIfNeeded()
-            if (wasReturning) playCloseAnim()
         } catch (e: Exception) {
             Log.e(TAG, "onResume", e)
         }
@@ -634,13 +600,10 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     override fun onPause() {
         super.onPause()
         try {
-            lastHomeBlur = -1
-            lastStageBlur = -1
-            home.setRenderEffect(null)
-            stage.setRenderEffect(null)
             pageAnimator?.cancel()
             folderAnim?.cancel()
             closeAnim?.cancel()
+            menuAnim?.cancel()
         } catch (e: Exception) {
             Log.e(TAG, "onPause", e)
         }
@@ -675,9 +638,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 folderIconCache = null
                 folderIconKey = ""
             }
-            if (level >= TRIM_MEMORY_UI_HIDDEN) {
-                sharedPool.clear()
-            }
+            if (level >= TRIM_MEMORY_UI_HIDDEN) sharedPool.clear()
         } catch (e: Exception) {
             Log.e(TAG, "trim", e)
         }
@@ -697,26 +658,15 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(userPresentReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(packageReceiver) } catch (_: Exception) {}
         try {
-            unregisterReceiver(userPresentReceiver)
-        } catch (e: Exception) {
-        }
-        try {
-            unregisterReceiver(packageReceiver)
-        } catch (e: Exception) {
-        }
-        try {
-            stage.removeCallbacks(null)
             pageAnimator?.cancel()
             anim?.cancel()
             folderAnim?.cancel()
             launchAnim?.cancel()
             closeAnim?.cancel()
-            pageAnimator = null
-            anim = null
-            folderAnim = null
-            launchAnim = null
-            closeAnim = null
+            menuAnim?.cancel()
         } catch (e: Exception) {
             Log.e(TAG, "destroyCancel", e)
         }
@@ -745,6 +695,30 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        try {
+            when (requestCode) {
+                REQ_BIND -> {
+                    if (resultCode == RESULT_OK) afterBind(pendingWidgetId)
+                    else widgetHost.deleteAppWidgetId(pendingWidgetId)
+                }
+                REQ_CONFIG -> {
+                    if (resultCode == RESULT_OK) {
+                        val info = widgetMgr.getAppWidgetInfo(pendingWidgetId)
+                        if (info != null) finishAddWidget(pendingWidgetId, info)
+                        else widgetHost.deleteAppWidgetId(pendingWidgetId)
+                    } else {
+                        widgetHost.deleteAppWidgetId(pendingWidgetId)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "activityResult", e)
+        }
+    }
+
     // ---------------- Views ----------------
 
     private fun setupWindow() {
@@ -757,15 +731,14 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
         if (Build.VERSION.SDK_INT >= 28) {
             val lp = window.attributes
-            lp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             window.attributes = lp
         }
     }
 
     private fun buildViews() {
         dockAdapter = AppAdapter(false, { v, i -> launch(v, i) }, null)
-        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it, "drawer") })
+        drawerAdapter = AppAdapter(true, { v, i -> launch(v, i) }, { showMenu(it) })
 
         clock = TextClock(this).apply {
             format12Hour = "h:mm"
@@ -969,9 +942,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         root.addView(overlay, MATCH, MATCH)
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            val bars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             applyInsets(bars.top, bars.bottom, ime.bottom)
             insets
@@ -1022,16 +993,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         pageCount = count
         val saved = (prefs.getString("home", "") ?: "").split("|")
         homeSlots.clear()
-        for (i in 0 until count * PAGE_CELLS) {
-            homeSlots.add(saved.getOrNull(i)?.takeIf { it.isNotEmpty() })
-        }
+        for (i in 0 until count * PAGE_CELLS) homeSlots.add(saved.getOrNull(i)?.takeIf { it.isNotEmpty() })
     }
 
     private fun loadSlots(name: String, target: MutableList<String?>) {
         val parts = (prefs.getString(name, "") ?: "").split("|")
-        for (i in target.indices) {
-            target[i] = parts.getOrNull(i)?.takeIf { it.isNotEmpty() }
-        }
+        for (i in target.indices) target[i] = parts.getOrNull(i)?.takeIf { it.isNotEmpty() }
     }
 
     private fun rebuildPages() {
@@ -1158,8 +1125,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 val lastStart = (pageCount - 1) * PAGE_CELLS
                 if (lastStart + PAGE_CELLS > homeSlots.size) break
                 val empty = (lastStart until lastStart + PAGE_CELLS).all { homeSlots.getOrNull(it) == null }
-                if (!empty) break
-                if (currentPage == pageCount - 1) break
+                if (!empty || currentPage == pageCount - 1) break
                 repeat(PAGE_CELLS) { homeSlots.removeAt(homeSlots.size - 1) }
                 pageCount--
             }
@@ -1220,43 +1186,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun attachDrags() {
         for (i in pageGrids.indices) {
-            dragHelper(pageAdapters[i], i, pageGrids[i], pageGuides[i], true)
-                .attachToRecyclerView(pageGrids[i])
+            dragHelper(pageAdapters[i], i, pageGrids[i], pageGuides[i], true).attachToRecyclerView(pageGrids[i])
         }
         dragHelper(dockAdapter, -1, dock, null, false).attachToRecyclerView(dock)
     }
 
-    // ---------------- Blur ----------------
-
-    @TargetApi(31)
-    private fun blurEffect(r: Float): RenderEffect =
-        RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
-
-    private fun applyHomeBlur(p: Float) {
-        if (Build.VERSION.SDK_INT < 31) return
-        val step = if (!fxBlur) 0 else (p.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
-        if (step == lastHomeBlur) return
-        lastHomeBlur = step
-        home.setRenderEffect(homeBlurFx[step])
-    }
-
-    private fun applyStageBlur(f: Float) {
-        if (Build.VERSION.SDK_INT < 31) return
-        val step = if (!fxBlur) 0 else (f.coerceIn(0f, 1f) * 12f + 0.5f).toInt()
-        if (step == lastStageBlur) return
-        lastStageBlur = step
-        stage.setRenderEffect(stageBlurFx[step])
-    }
-
-    @TargetApi(31)
-    private fun setIconBlur(step: Int) {
-        val fx = iconBlurFx[step]
-        for (g in pageGrids) g.setRenderEffect(fx)
-        dock.setRenderEffect(fx)
-        drawerList.setRenderEffect(fx)
-    }
-
-    // ---------------- Intro ----------------
+    // ---------------- Intro (home icons stagger) ----------------
 
     private fun runIntroIfNeeded() {
         if (!introPending) return
@@ -1276,23 +1211,20 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 if (pos != RecyclerView.NO_POSITION) items.add(v to pos / COLS)
             }
             for (i in 0 until dock.childCount) items.add(dock.getChildAt(i) to 0)
-            val offset = dp(48).toFloat()
+            val offset = dp(32).toFloat()
             val ease = PathInterpolator(0.2f, 0.8f, 0.2f, 1f)
             for ((v, _) in items) {
                 v.animate().cancel()
                 v.translationY = offset
                 v.alpha = 0f
-                v.scaleX = 0.85f
-                v.scaleY = 0.85f
+                v.scaleX = 0.9f
+                v.scaleY = 0.9f
             }
             for ((v, row) in items) {
                 v.animate()
-                    .translationY(0f)
-                    .alpha(1f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setStartDelay(row * 45L)
-                    .setDuration(450)
+                    .translationY(0f).alpha(1f).scaleX(1f).scaleY(1f)
+                    .setStartDelay(row * 40L)
+                    .setDuration(380)
                     .setInterpolator(ease)
                     .start()
             }
@@ -1358,14 +1290,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             override fun getMovementFlags(recycler: RecyclerView, vh: RecyclerView.ViewHolder): Int {
                 if (adapter.itemAt(vh.bindingAdapterPosition) == null) return 0
                 return makeMovementFlags(
-                    ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
-                    0
+                    ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT, 0
                 )
             }
 
-            override fun onMove(
-                recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder
-            ): Boolean = false
+            override fun onMove(recycler: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean = false
 
             override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
@@ -1407,10 +1336,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                     vh.itemView.alpha = 1f
                     dragLock = false
                     guide?.visible = false
-
                     val removing = removeZone.visibility == View.VISIBLE && inside(removeZone, dropX, dropY)
                     removeZone.visibility = View.GONE
-
                     val local = vh.bindingAdapterPosition
                     if (local != RecyclerView.NO_POSITION) {
                         if (pageIdx < 0) {
@@ -1445,11 +1372,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     private fun rebuildPagesIfCountChanged() {
-        if (builtPageCount != pageCount || pageGrids.size != pageCount) {
-            rebuildPages()
-        } else {
-            refreshHomeSafe()
-        }
+        if (builtPageCount != pageCount || pageGrids.size != pageCount) rebuildPages() else refreshHomeSafe()
     }
 
     private fun handleDrop(slots: MutableList<String?>, local: Int, rv: RecyclerView, removing: Boolean, allowFolders: Boolean) {
@@ -1466,7 +1389,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Drawer progress (Host) ----------------
+    // ---------------- Drawer progress and page swipe (Host) ----------------
 
     override fun canStartDrag(dy: Float, rawStartY: Float): Boolean {
         if (dragLock || folderOpen) return false
@@ -1491,6 +1414,56 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             else -> progress > 0.5f
         }
         animateProgress(if (open) 1f else 0f, v)
+    }
+
+    override fun onEmptyLongPress(rawX: Float, rawY: Float) {
+        try {
+            if (progress > 0.01f || pendingReturn || folderOpen) return
+            if (isOnAnyItem(rawX, rawY)) return
+            if (inside(widgetBox, rawX, rawY)) return
+            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            showHomeMenu()
+        } catch (e: Exception) {
+            Log.e(TAG, "emptyLongPress", e)
+        }
+    }
+
+    override fun isBusy(): Boolean =
+        launchAnim?.isRunning == true || anim?.isRunning == true ||
+            pageAnimator?.isRunning == true || closeAnim?.isRunning == true
+
+    override fun canStartPageSwipe(dx: Float): Boolean {
+        if (dragLock || folderOpen || progress > 0.01f || pendingReturn) return false
+        return if (dx < 0) currentPage < pageCount - 1 else currentPage > 0
+    }
+
+    override fun onPageDrag(dx: Float) {
+        try {
+            pageAnimator?.cancel()
+            val base = -currentPage * pageWidth()
+            var target = base + dx
+            val minX = -(pageCount - 1) * pageWidth()
+            val maxX = 0f
+            if (target > maxX) target = maxX + (target - maxX) * 0.3f
+            if (target < minX) target = minX + (target - minX) * 0.3f
+            setPageOffset(target)
+        } catch (e: Exception) {
+            Log.e(TAG, "pageDrag", e)
+        }
+    }
+
+    override fun onPageDragEnd(vx: Float) {
+        try {
+            val cur = -pageOffset / pageWidth()
+            val next = when {
+                vx < -800f -> currentPage + 1
+                vx > 800f -> currentPage - 1
+                else -> Math.round(cur)
+            }
+            goToPage(next.coerceIn(0, max(0, pageCount - 1)), true)
+        } catch (e: Exception) {
+            Log.e(TAG, "pageDragEnd", e)
+        }
     }
 
     private fun dist() = maxOf(1f, root.height * 0.5f)
@@ -1527,7 +1500,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val s = 1f - 0.08f * p
             home.scaleX = s
             home.scaleY = s
-            applyHomeBlur(p)
             val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
             if (drawer.visibility != dv) drawer.visibility = dv
             val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
@@ -1544,32 +1516,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         drawer.setLayerType(t, null)
     }
 
-    private fun applyDepth(d: Float) {
-        depth = d
-        val s = 1f + 0.14f * d
-        stage.scaleX = s
-        stage.scaleY = s
-        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
-        if (Build.VERSION.SDK_INT >= 31 && iconBlurOn) {
-            val step = if (d > 0.5f) 8 else 0
-            if (step != lastIconBlur) {
-                lastIconBlur = step
-                setIconBlur(step)
-            }
-        }
-    }
-
-    // ---------------- Search ----------------
-
-    private fun filterApps(q: String) {
-        try {
-            drawerAdapter.submitDiff(
-                if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) }
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "filterApps", e)
-        }
-    }
+    // ---------------- Search (item 3: niche se aata hai) ----------------
 
     private fun setSearchMode(on: Boolean) {
         try {
@@ -1578,14 +1525,28 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             searchBox.visibility = if (on) View.VISIBLE else View.GONE
             val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
             if (on) {
+                searchBox.alpha = 0f
+                searchBox.translationY = dp(16).toFloat()
+                searchBox.animate().alpha(1f).translationY(0f).setDuration(260).setInterpolator(emphasized).start()
+                drawerList.translationY = dp(40).toFloat()
+                drawerList.animate().translationY(0f).setDuration(300).setInterpolator(emphasized).start()
                 searchBox.requestFocus()
                 imm.showSoftInput(searchBox, 0)
             } else {
                 searchBox.setText("")
+                drawerList.translationY = 0f
                 imm.hideSoftInputFromWindow(searchBox.windowToken, 0)
             }
         } catch (e: Exception) {
             Log.e(TAG, "search", e)
+        }
+    }
+
+    private fun filterApps(q: String) {
+        try {
+            drawerAdapter.submitDiff(if (q.isBlank()) allApps else allApps.filter { it.label.contains(q, ignoreCase = true) })
+        } catch (e: Exception) {
+            Log.e(TAG, "filterApps", e)
         }
     }
 
@@ -1622,7 +1583,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             folderCard.alpha = 0f
             folderCard.scaleX = 0.8f
             folderCard.scaleY = 0.8f
-            applyStageBlur(0f)
         } catch (e: Exception) {
             Log.e(TAG, "closeFolderInstant", e)
         }
@@ -1643,7 +1603,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 val s = 0.8f + 0.2f * f
                 folderCard.scaleX = s
                 folderCard.scaleY = s
-                applyStageBlur(c)
             }
             a.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
@@ -1665,8 +1624,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val id = currentFolderId ?: return
             val f = folders[id] ?: return
             folderTitle.text = f.name
-            val map = buildMap()
-            folderAdapter.submitDiff(f.keys.map { map[it] })
+            folderAdapter.submitDiff(f.keys.map { buildMap()[it] })
         } catch (e: Exception) {
             Log.e(TAG, "folderPopup", e)
         }
@@ -1705,518 +1663,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Data: persist and apps ----------------
-
-    private fun persist() {
-        try {
-            val foldersText = folders.entries.joinToString("\n") {
-                it.key + "\t" + it.value.name + "\t" + it.value.keys.joinToString("|")
-            }
-            prefs.edit()
-                .putString("home", homeSlots.joinToString("|") { it ?: "" })
-                .putString("dock", dockSlots.joinToString("|") { it ?: "" })
-                .putString("folders", foldersText)
-                .putInt("home_pages", pageCount)
-                .apply()
-        } catch (e: Exception) {
-            Log.e(TAG, "persist", e)
-        }
-    }
-
-    private fun loadFolders() {
-        try {
-            folders.clear()
-            (prefs.getString("folders", "") ?: "").split("\n").filter { it.isNotEmpty() }.forEach { line ->
-                val p = line.split("\t")
-                if (p.size < 3) return@forEach
-                val keys = p[2].split("|").filter { it.isNotEmpty() }.toMutableList()
-                folders[p[0]] = Folder(p[1], keys)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "loadFolders", e)
-        }
-    }
-
-    private fun currentPack(): String =
-        getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
-
-    private fun makeIntent(cn: ComponentName): Intent =
-        Intent(Intent.ACTION_MAIN)
-            .addCategory(Intent.CATEGORY_LAUNCHER)
-            .setComponent(cn)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-
-    private fun cacheDir(): File = File(filesDir, "icons").apply { mkdirs() }
-
-    private fun cacheFile(pack: String, key: String): File {
-        val dir = File(cacheDir(), if (pack.isEmpty()) "default" else pack).apply { mkdirs() }
-        return File(dir, key.hashCode().toString() + ".png")
-    }
-
-    private fun loadIconFromDisk(pack: String, key: String): Bitmap? {
-        val mk = pack + "|" + key
-        iconLru.get(mk)?.let { return it }
-        return try {
-            val f = cacheFile(pack, key)
-            if (!f.exists() || f.length() == 0L) return null
-            BitmapFactory.decodeFile(f.path)?.also { iconLru.put(mk, it) }
-        } catch (e: Exception) {
-            Log.e(TAG, "icon decode $key", e)
-            null
-        }
-    }
-
-    private fun showCachedApps() {
-        try {
-            val pack = currentPack()
-            val c = getSharedPreferences("app_cache", MODE_PRIVATE)
-            if (c.getString("tag", "") != pack + "|" + CACHE_VER) return
-            val lines = (c.getString("list", "") ?: "").split("\n").filter { it.isNotEmpty() }
-            val list = lines.mapNotNull { line ->
-                try {
-                    val parts = line.split("\t")
-                    if (parts.size < 2) return@mapNotNull null
-                    val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
-                    val bmp = loadIconFromDisk(pack, parts[0]) ?: return@mapNotNull null
-                    AppItem(parts[1], parts[0], makeIntent(cn), bmp)
-                } catch (e: Exception) {
-                    Log.e(TAG, "cache line", e)
-                    null
-                }
-            }
-            if (list.isEmpty()) return
-            allApps = list
-            filterApps("")
-            refreshHomeSafe()
-        } catch (e: Exception) {
-            Log.e(TAG, "showCachedApps", e)
-        }
-    }
-
-    private fun saveCache(apps: List<AppItem>, pack: String) {
-        try {
-            for (a in apps) {
-                val f = cacheFile(pack, a.key)
-                if (f.exists() && f.length() > 0) continue
-                FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
-            }
-            getSharedPreferences("app_cache", MODE_PRIVATE).edit()
-                .putString("tag", pack + "|" + CACHE_VER)
-                .putString("list", apps.joinToString("\n") { it.key + "\t" + it.label })
-                .apply()
-        } catch (e: Exception) {
-            Log.e(TAG, "saveCache", e)
-        }
-    }
-
-    private fun loadApps() {
-        if (bg.isShutdown) return
-        val pack = currentPack()
-        bg.execute {
-            try {
-                val pm = packageManager
-                val sizePx = dp(96)
-                val packMap = if (pack.isNotEmpty()) IconPack.map(this, pack) else null
-                val packCtx = if (pack.isNotEmpty()) IconPack.context(this, pack) else null
-                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                val apps = pm.queryIntentActivities(main, 0).mapNotNull { ri ->
-                    try {
-                        val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
-                        val key = cn.flattenToString()
-                        val icon = loadIconFromDisk(pack, key)
-                            ?: makeIcon(pack, packMap, packCtx, ri, pm, sizePx).also {
-                                iconLru.put(pack + "|" + key, it)
-                            }
-                        AppItem(ri.loadLabel(pm).toString(), key, makeIntent(cn), icon)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "app item", e)
-                        null
-                    }
-                }.sortedBy { it.label.lowercase() }
-                saveCache(apps, pack)
-                runOnUiThread {
-                    try {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        allApps = apps
-                        appsLoaded = true
-                        loadedPack = pack
-                        filterApps(searchBox.text?.toString() ?: "")
-                        refreshHomeSafe()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "apps ui", e)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "loadApps", e)
-            }
-        }
-    }
-
-    private fun makeIcon(
-        pack: String,
-        packMap: Map<String, String>?,
-        packCtx: Context?,
-        ri: ResolveInfo,
-        pm: PackageManager,
-        size: Int
-    ): Bitmap {
-        val key = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name).flattenToString()
-        val packDraw = if (pack.isNotEmpty() && packMap != null && packCtx != null) {
-            packMap[key]?.let { IconPack.drawable(packCtx, it) }
-        } else null
-        val src: Drawable = packDraw ?: ri.loadIcon(pm)
-        return squareIcon(src, size)
-    }
-
-    private fun squareIcon(dr: Drawable, size: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        try {
-            if (dr is AdaptiveIconDrawable) {
-                dr.background?.let {
-                    it.setBounds(0, 0, size, size)
-                    it.draw(c)
-                }
-                dr.foreground?.let {
-                    it.setBounds(0, 0, size, size)
-                    it.draw(c)
-                }
-            } else {
-                dr.setBounds(0, 0, size, size)
-                dr.draw(c)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "squareIcon", e)
-        }
-        return bmp
-    }
-
-    private fun buildMap(): Map<String, AppItem> {
-        val m = HashMap<String, AppItem>()
-        allApps.forEach { m[it.key] = it }
-        for ((id, f) in folders) {
-            val items = f.keys.mapNotNull { m[it] }
-            val sig = id + "|" + f.name + "|" + items.joinToString(",") { it.key }
-            val icon = if (folderIconKey == sig && folderIconCache != null) {
-                folderIconCache!!
-            } else {
-                makeFolderIcon(items).also {
-                    folderIconKey = sig
-                    folderIconCache = it
-                }
-            }
-            m[FOLDER_PREFIX + id] = AppItem(f.name, FOLDER_PREFIX + id, Intent(Intent.ACTION_MAIN), icon)
-        }
-        return m
-    }
-
-    private fun makeFolderIcon(items: List<AppItem>): Bitmap {
-        val size = dp(96)
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        try {
-            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xCC2A2A30.toInt() }
-            c.drawRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), bgPaint)
-            val pad = size * 0.12f
-            val gap = size * 0.06f
-            val mini = (size - 2 * pad - gap) / 2f
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-            items.take(4).forEachIndexed { i, item ->
-                val x = pad + (i % 2) * (mini + gap)
-                val y = pad + (i / 2) * (mini + gap)
-                c.drawBitmap(item.icon, null, RectF(x, y, x + mini, y + mini), p)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "folderIcon", e)
-        }
-        return bmp
-    }
-
-    private fun refreshHomeSafe() {
-        try {
-            refreshHome()
-        } catch (e: Exception) {
-            Log.e(TAG, "refreshHome", e)
-        }
-    }
-
-    private fun refreshHome() {
-        val map = buildMap()
-        for (p in 0 until pageAdapters.size) {
-            val from = p * PAGE_CELLS
-            val to = minOf(from + PAGE_CELLS, homeSlots.size)
-            if (from >= to) break
-            pageAdapters[p].submitDiff(homeSlots.subList(from, to).map { k -> k?.let { map[it] } })
-        }
-        dockAdapter.submitDiff(dockSlots.map { k -> k?.let { map[it] } })
-        hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
-        updateDots()
-        if (folderOpen) refreshFolderPopup()
-    }
-
-    // ---------------- Launch and close animation ----------------
-
-    private fun showMenu(item: AppItem, where: String) {
-        val pkg = item.intent.component?.packageName ?: return
-        val actions = mutableListOf<Pair<String, () -> Unit>>()
-        if (where == "drawer") {
-            actions.add("Add to Home" to { addTo(homeSlots, item.key, "Home") })
-            actions.add("Add to Dock" to { addTo(dockSlots, item.key, "Dock") })
-        }
-        actions.add("App info" to { openAppInfo(pkg) })
-        if (!isSystemApp(pkg)) {
-            actions.add("Uninstall" to { uninstallApp(pkg) })
-        }
-        showSheet(item.label, item.icon, actions)
-    }
-
-    private fun openAppInfo(pkg: String) {
-        try {
-            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
-        } catch (e: Exception) {
-            Log.e(TAG, "appInfo", e)
-        }
-    }
-
-    private fun isSystemApp(pkg: String): Boolean = try {
-        val ai = packageManager.getApplicationInfo(pkg, 0)
-        (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-    } catch (e: Exception) {
-        true
-    }
-
-    private fun uninstallApp(pkg: String) {
-        try {
-            startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")))
-        } catch (e: Exception) {
-            Log.e(TAG, "uninstall", e)
-            Toast.makeText(this, "Uninstall nahi ho paya", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun showSheet(heading: String, icon: Bitmap?, actions: List<Pair<String, () -> Unit>>) {
-        try {
-            if (isFinishing || isDestroyed) return
-            val d = Dialog(this)
-            d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), dp(16), dp(8), dp(8))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(28).toFloat()
-                    setColor(0xF2202024.toInt())
-                }
-            }
-            val head = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), 0, dp(16), dp(8))
-                if (icon != null) {
-                    addView(
-                        ImageView(this@MainActivity).apply { setImageBitmap(icon) },
-                        LinearLayout.LayoutParams(dp(40), dp(40))
-                    )
-                }
-                addView(TextView(this@MainActivity).apply {
-                    text = heading
-                    textSize = 18f
-                    setTextColor(Color.WHITE)
-                    typeface = Typeface.DEFAULT_BOLD
-                    setPadding(if (icon != null) dp(12) else 0, 0, 0, 0)
-                })
-            }
-            card.addView(head)
-            for ((label, action) in actions) {
-                card.addView(TextView(this).apply {
-                    text = label
-                    textSize = 16f
-                    setTextColor(Color.WHITE)
-                    setPadding(dp(16), dp(14), dp(16), dp(14))
-                    setOnClickListener {
-                        d.dismiss()
-                        try { action() } catch (e: Exception) { Log.e(TAG, "action $label", e) }
-                    }
-                }, LinearLayout.LayoutParams(MATCH, WRAP))
-            }
-            val scroll = ScrollView(this).apply { addView(card, MATCH, WRAP) }
-            val wrap = FrameLayout(this).apply {
-                setPadding(dp(12), 0, dp(12), dp(24))
-                addView(scroll, MATCH, WRAP)
-            }
-            d.setContentView(wrap)
-            d.window?.apply {
-                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                setGravity(Gravity.BOTTOM)
-                setLayout(MATCH, WRAP)
-                setDimAmount(0.4f)
-                setWindowAnimations(android.R.style.Animation_InputMethod)
-            }
-            d.show()
-        } catch (e: Exception) {
-            Log.e(TAG, "showSheet", e)
-        }
-    }
-
-    private fun addTo(slots: MutableList<String?>, key: String, name: String) {
-        try {
-            if (key in slots || folders.values.any { key in it.keys } || key in homeSlots) {
-                Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
-                return
-            }
-            var idx = slots.indexOf(null)
-            if (name == "Home" && idx == -1 && pageCount < MAX_PAGES) {
-                addPage()
-                idx = homeSlots.indexOf(null)
-            }
-            if (idx == -1) {
-                Toast.makeText(this, "$name is full", Toast.LENGTH_SHORT).show()
-                return
-            }
-            slots[idx] = key
-            persist()
-            refreshHomeSafe()
-            Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Log.e(TAG, "addTo", e)
-        }
-    }
-
-    private fun launch(view: View, item: AppItem) {
-        try {
-            if (item.key.startsWith(FOLDER_PREFIX)) {
-                openFolder(folderIdOf(item.key))
-                return
-            }
-            if (pendingReturn) return
-            if (searching) setSearchMode(false)
-
-            val s = getSharedPreferences("settings", MODE_PRIVATE)
-            val ms = s.getInt("anim_ms", 300).toLong()
-            val custom = s.getBoolean("custom_anim", true)
-            iconBlurOn = s.getBoolean("icon_blur", true)
-
-            val loc = IntArray(2)
-            val rl = IntArray(2)
-            view.getLocationInWindow(loc)
-            root.getLocationInWindow(rl)
-            val l = (loc[0] - rl[0]).toFloat()
-            val t = (loc[1] - rl[1]).toFloat()
-            stage.pivotX = l + view.width / 2f
-            stage.pivotY = t + view.height / 2f
-            pendingReturn = true
-
-            if (custom) {
-                overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
-                overlay.visibility = View.VISIBLE
-                animateLaunch(1f, ms) { startApp(item, true, null) }
-            } else {
-                startApp(item, false, view)
-                animateLaunch(1f, ms)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "launch", e)
-            resetLaunch()
-        }
-    }
-
-    private fun startApp(item: AppItem, custom: Boolean, src: View?) {
-        try {
-            val opts = if (custom || src == null)
-                ActivityOptions.makeCustomAnimation(this, 0, 0)
-            else
-                ActivityOptions.makeScaleUpAnimation(src, 0, 0, src.width, src.height)
-            startActivity(item.intent, opts.toBundle())
-            closeFolderInstant()
-            val token = Any()
-            launchToken = token
-            stage.postDelayed({
-                if (launchToken === token && pendingReturn) resetLaunch()
-            }, LAUNCH_RESET_MS)
-        } catch (e: Exception) {
-            Log.e(TAG, "startApp", e)
-            resetLaunch()
-        }
-    }
-
-    private fun resetLaunch() {
-        try {
-            pendingReturn = false
-            launchAnim?.cancel()
-            applyDepth(0f)
-            overlay.t = 0f
-            overlay.visibility = View.GONE
-            stage.setLayerType(View.LAYER_TYPE_NONE, null)
-        } catch (e: Exception) {
-            Log.e(TAG, "resetLaunch", e)
-        }
-    }
-
-    /** App se wapas aane par chhota fade+scale-in (Settings: close_anim). */
-    private fun playCloseAnim() {
-        try {
-            if (!closeAnimEnabled()) return
-            closeAnim?.cancel()
-            stage.alpha = 0f
-            stage.scaleX = 0.96f
-            stage.scaleY = 0.96f
-            val a = ValueAnimator.ofFloat(0f, 1f)
-            a.duration = 220
-            a.interpolator = emphasized
-            a.addUpdateListener {
-                val v = it.animatedValue as Float
-                stage.alpha = v
-                val s = 0.96f + 0.04f * v
-                stage.scaleX = s
-                stage.scaleY = s
-            }
-            closeAnim = a
-            a.start()
-        } catch (e: Exception) {
-            Log.e(TAG, "closeAnim", e)
-        }
-    }
-
-    private fun animateLaunch(to: Float, duration: Long, onEnd: (() -> Unit)? = null) {
-        launchAnim?.cancel()
-        stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        val a = ValueAnimator.ofFloat(depth, to)
-        a.duration = duration
-        a.interpolator = emphasized
-        a.addUpdateListener {
-            val v = it.animatedValue as Float
-            applyDepth(v)
-            overlay.t = v
-        }
-        a.addListener(object : AnimatorListenerAdapter() {
-            private var cancelled = false
-
-            override fun onAnimationCancel(animation: Animator) {
-                cancelled = true
-            }
-
-            override fun onAnimationEnd(animation: Animator) {
-                if (!cancelled) {
-                    stage.setLayerType(View.LAYER_TYPE_NONE, null)
-                    onEnd?.invoke()
-                }
-            }
-        })
-        launchAnim = a
-        a.start()
-    }
-    // ---------------- Missing helpers (restored) ----------------
-
-    override fun onEmptyLongPress(rawX: Float, rawY: Float) {
-        try {
-            if (progress > 0.01f || pendingReturn || folderOpen) return
-            if (isOnAnyItem(rawX, rawY)) return
-            if (inside(widgetBox, rawX, rawY)) return
-            window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            showHomeMenu()
-        } catch (e: Exception) {
-            Log.e(TAG, "emptyLongPress", e)
-        }
-    }
+    // ---------------- Hit tests ----------------
 
     private fun inside(v: View, x: Float, y: Float): Boolean {
         if (v.visibility != View.VISIBLE || v.height == 0) return false
@@ -2240,57 +1687,31 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         return onItem(dock, x, y)
     }
 
-    private fun applyClock() {
-        try {
-            val on = prefs.getBoolean("clock", true)
-            clock.visibility = if (on) View.VISIBLE else View.GONE
-            date.visibility = if (on) View.VISIBLE else View.GONE
-        } catch (e: Exception) {
-            Log.e(TAG, "clock", e)
-        }
-    }
-
-    private fun applyIconStyle() {
-        try {
-            val s = readIconStyle(this)
-            for (a in pageAdapters) a.applyStyle(s)
-            dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
-            drawerAdapter.applyStyle(s)
-            folderAdapter.applyStyle(s)
-            drawerGapH = s.gapH
-            drawerGapV = s.gapV
-            drawerList.invalidateItemDecorations()
-        } catch (e: Exception) {
-            Log.e(TAG, "iconStyle", e)
-        }
-    }
+    // ---------------- Home menu and widgets ----------------
 
     private fun showHomeMenu() {
         val clockOn = prefs.getBoolean("clock", true)
-        val actions = listOf<Pair<String, () -> Unit>>(
+        showSheet("Home screen", null, listOf(
             "Add widget" to { pickWidget() },
             (if (clockOn) "Hide clock" else "Show clock") to {
                 prefs.edit().putBoolean("clock", !clockOn).apply()
                 applyClock()
             },
             "Launcher settings" to { startActivity(Intent(this, SettingsActivity::class.java)) }
-        )
-        showSheet("Home screen", null, actions)
+        ))
     }
 
     private fun pickWidget() {
         try {
             val pm = packageManager
-            val providers = widgetMgr.installedProviders
-                .sortedBy { it.loadLabel(pm).toString().lowercase() }
+            val providers = widgetMgr.installedProviders.sortedBy { it.loadLabel(pm).toString().lowercase() }
             if (providers.isEmpty()) {
                 Toast.makeText(this, "Koi widget installed nahi hai", Toast.LENGTH_SHORT).show()
                 return
             }
-            val actions = providers.map { info ->
+            showSheet("Add widget", null, providers.map { info ->
                 info.loadLabel(pm).toString() to { bindWidget(info) }
-            }
-            showSheet("Add widget", null, actions)
+            })
         } catch (e: Exception) {
             Log.e(TAG, "pickWidget", e)
         }
@@ -2348,30 +1769,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         saveWidgetIds()
     }
 
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        try {
-            when (requestCode) {
-                REQ_BIND -> {
-                    if (resultCode == RESULT_OK) afterBind(pendingWidgetId)
-                    else widgetHost.deleteAppWidgetId(pendingWidgetId)
-                }
-                REQ_CONFIG -> {
-                    if (resultCode == RESULT_OK) {
-                        val info = widgetMgr.getAppWidgetInfo(pendingWidgetId)
-                        if (info != null) finishAddWidget(pendingWidgetId, info)
-                        else widgetHost.deleteAppWidgetId(pendingWidgetId)
-                    } else {
-                        widgetHost.deleteAppWidgetId(pendingWidgetId)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "activityResult", e)
-        }
-    }
-
     private fun addWidgetView(id: Int, info: AppWidgetProviderInfo) {
         try {
             val hv: AppWidgetHostView = widgetHost.createView(this, id, info)
@@ -2384,8 +1781,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 }))
                 true
             }
-            val h = dp(max(info.minHeight, 60))
-            widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, h).apply {
+            widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, dp(max(info.minHeight, 60))).apply {
                 setMargins(dp(12), dp(8), dp(12), 0)
             })
         } catch (e: Exception) {
@@ -2407,8 +1803,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     private fun restoreWidgets() {
         try {
-            val ids = (prefs.getString("widget_ids", "") ?: "")
-                .split(",").mapNotNull { it.toIntOrNull() }
+            val ids = (prefs.getString("widget_ids", "") ?: "").split(",").mapNotNull { it.toIntOrNull() }
             for (id in ids) {
                 try {
                     val info = widgetMgr.getAppWidgetInfo(id)
@@ -2423,8 +1818,536 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "restoreWidgets", e)
         }
     }
+
+    // ---------------- App menu (item 2: box animation) ----------------
+
+    private fun showMenu(item: AppItem) {
+        val pkg = item.intent.component?.packageName ?: return
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        actions.add("Add to Home" to { addTo(homeSlots, item.key, "Home") })
+        actions.add("Add to Dock" to { addTo(dockSlots, item.key, "Dock") })
+        actions.add("App info" to { openAppInfo(pkg) })
+        if (isUserApp(pkg)) actions.add("Uninstall" to { uninstallApp(pkg) })
+        showSheet(item.label, item.icon, actions)
+    }
+
+    private fun openAppInfo(pkg: String) {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg")))
+        } catch (e: Exception) {
+            Log.e(TAG, "appInfo", e)
+        }
+    }
+
+    /** Sirf wahi app jo system ka nahi hai, ya update hua system app (Samsung) bhi. */
+    private fun isUserApp(pkg: String): Boolean = try {
+        val ai = packageManager.getApplicationInfo(pkg, 0)
+        (ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+    } catch (e: Exception) {
+        false
+    }
+
+    /** Uninstall: pehle ACTION_DELETE, agar koi handler na mile to App info kholo. */
+    private fun uninstallApp(pkg: String) {
+        try {
+            val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg"))
+            if (intent.resolveActivity(packageManager) != null) {
+                startActivity(intent)
+            } else {
+                openAppInfo(pkg)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "uninstall", e)
+            openAppInfo(pkg)
+        }
+    }
+
+    private fun showSheet(heading: String, icon: Bitmap?, actions: List<Pair<String, () -> Unit>>) {
+        try {
+            if (isFinishing || isDestroyed) return
+            val d = Dialog(this)
+            d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), dp(16), dp(8), dp(8))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(28).toFloat()
+                    setColor(0xF2202024.toInt())
+                }
+            }
+            val head = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(16), dp(8))
+                if (icon != null) {
+                    addView(ImageView(this@MainActivity).apply { setImageBitmap(icon) },
+                        LinearLayout.LayoutParams(dp(40), dp(40)))
+                }
+                addView(TextView(this@MainActivity).apply {
+                    text = heading
+                    textSize = 18f
+                    setTextColor(Color.WHITE)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(if (icon != null) dp(12) else 0, 0, 0, 0)
+                })
+            }
+            card.addView(head)
+            for ((label, action) in actions) {
+                card.addView(TextView(this).apply {
+                    text = label
+                    textSize = 16f
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    setOnClickListener {
+                        d.dismiss()
+                        try { action() } catch (e: Exception) { Log.e(TAG, "action $label", e) }
+                    }
+                }, LinearLayout.LayoutParams(MATCH, WRAP))
+            }
+            val scroll = ScrollView(this).apply { addView(card, MATCH, WRAP) }
+            val wrap = FrameLayout(this).apply {
+                setPadding(dp(12), 0, dp(12), dp(24))
+                addView(scroll, MATCH, WRAP)
+            }
+            d.setContentView(wrap)
+            d.window?.apply {
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setGravity(Gravity.BOTTOM)
+                setLayout(MATCH, WRAP)
+                setDimAmount(0.4f)
+                setWindowAnimations(android.R.style.Animation_InputMethod)
+            }
+            // Box animation: card icon ke andar se scale-up hota hai
+            card.pivotX = card.width / 2f
+            card.pivotY = dp(60).toFloat()
+            card.scaleX = 0.7f
+            card.scaleY = 0.7f
+            card.alpha = 0f
+            d.setOnShowListener {
+                card.animate().scaleX(1f).scaleY(1f).alpha(1f)
+                    .setDuration(260).setInterpolator(OvershootInterpolator(0.8f)).start()
+            }
+            d.show()
+        } catch (e: Exception) {
+            Log.e(TAG, "showSheet", e)
+        }
+    }
+
+    private fun addTo(slots: MutableList<String?>, key: String, name: String) {
+        try {
+            if (key in slots || folders.values.any { key in it.keys } || key in homeSlots) {
+                Toast.makeText(this, "Already in $name", Toast.LENGTH_SHORT).show()
+                return
+            }
+            var idx = slots.indexOf(null)
+            if (name == "Home" && idx == -1 && pageCount < MAX_PAGES) {
+                addPage()
+                idx = homeSlots.indexOf(null)
+            }
+            if (idx == -1) {
+                Toast.makeText(this, "$name is full", Toast.LENGTH_SHORT).show()
+                return
+            }
+            slots[idx] = key
+            persist()
+            refreshHomeSafe()
+            Toast.makeText(this, "Added to $name", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "addTo", e)
+        }
+    }
+
+    // ---------------- Launch and close ----------------
+
+    private fun launch(view: View, item: AppItem) {
+        try {
+            if (item.key.startsWith(FOLDER_PREFIX)) {
+                openFolder(folderIdOf(item.key))
+                return
+            }
+            if (pendingReturn) return
+            if (searching) setSearchMode(false)
+
+            val s = getSharedPreferences("settings", MODE_PRIVATE)
+            val ms = s.getInt("anim_ms", 300).toLong()
+            val custom = s.getBoolean("custom_anim", true)
+
+            val loc = IntArray(2)
+            val rl = IntArray(2)
+            view.getLocationInWindow(loc)
+            root.getLocationInWindow(rl)
+            val l = (loc[0] - rl[0]).toFloat()
+            val t = (loc[1] - rl[1]).toFloat()
+            stage.pivotX = l + view.width / 2f
+            stage.pivotY = t + view.height / 2f
+            pendingReturn = true
+
+            if (custom) {
+                overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
+                overlay.visibility = View.VISIBLE
+                animateLaunch(1f, ms) { startApp(item) }
+            } else {
+                startApp(item)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "launch", e)
+            resetLaunch()
+        }
+    }
+
+    private fun startApp(item: AppItem) {
+        try {
+            val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
+            startActivity(item.intent, opts.toBundle())
+            closeFolderInstant()
+            val token = Any()
+            launchToken = token
+            stage.postDelayed({
+                if (launchToken === token && pendingReturn) resetLaunch()
+            }, LAUNCH_RESET_MS)
+        } catch (e: Exception) {
+            Log.e(TAG, "startApp", e)
+            resetLaunch()
+        }
+    }
+
+    private fun resetLaunch() {
+        try {
+            pendingReturn = false
+            launchAnim?.cancel()
+            applyDepth(0f)
+            overlay.t = 0f
+            overlay.visibility = View.GONE
+            stage.setLayerType(View.LAYER_TYPE_NONE, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "resetLaunch", e)
+        }
+    }
+
+    /** Item 4: app band hone par home icons ka smooth stagger. */
+    private fun playCloseAnim() {
+        try {
+            if (!closeAnimEnabled()) return
+            closeAnim?.cancel()
+            stage.alpha = 0f
+            stage.scaleX = 0.97f
+            stage.scaleY = 0.97f
+            val a = ValueAnimator.ofFloat(0f, 1f)
+            a.duration = 240
+            a.interpolator = emphasized
+            a.addUpdateListener {
+                val v = it.animatedValue as Float
+                stage.alpha = v
+                val s = 0.97f + 0.03f * v
+                stage.scaleX = s
+                stage.scaleY = s
+            }
+            closeAnim = a
+            a.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "closeAnim", e)
+        }
+    }
+
+    private fun applyDepth(d: Float) {
+        depth = d
+        stage.scaleX = 1f + 0.14f * d
+        stage.scaleY = 1f + 0.14f * d
+        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    }
+
+    private fun animateLaunch(to: Float, duration: Long, onEnd: (() -> Unit)? = null) {
+        launchAnim?.cancel()
+        stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        val a = ValueAnimator.ofFloat(depth, to)
+        a.duration = duration
+        a.interpolator = emphasized
+        a.addUpdateListener {
+            val v = it.animatedValue as Float
+            applyDepth(v)
+            overlay.t = v
+        }
+        a.addListener(object : AnimatorListenerAdapter() {
+            private var cancelled = false
+            override fun onAnimationCancel(animation: Animator) {
+                cancelled = true
+            }
+            override fun onAnimationEnd(animation: Animator) {
+                if (!cancelled) {
+                    stage.setLayerType(View.LAYER_TYPE_NONE, null)
+                    onEnd?.invoke()
+                }
+            }
+        })
+        launchAnim = a
+        a.start()
+    }
+
     private fun avgColor(b: Bitmap): Int =
         Bitmap.createScaledBitmap(b, 1, 1, true).getPixel(0, 0) or 0xFF000000.toInt()
+
+    // ---------------- Apps, cache, icons ----------------
+
+    private fun applyClock() {
+        try {
+            val on = prefs.getBoolean("clock", true)
+            clock.visibility = if (on) View.VISIBLE else View.GONE
+            date.visibility = if (on) View.VISIBLE else View.GONE
+        } catch (e: Exception) {
+            Log.e(TAG, "clock", e)
+        }
+    }
+
+    private fun applyIconStyle() {
+        try {
+            val s = readIconStyle(this)
+            for (a in pageAdapters) a.applyStyle(s)
+            dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
+            drawerAdapter.applyStyle(s)
+            folderAdapter.applyStyle(s)
+            drawerGapH = s.gapH
+            drawerGapV = s.gapV
+            drawerList.invalidateItemDecorations()
+        } catch (e: Exception) {
+            Log.e(TAG, "iconStyle", e)
+        }
+    }
+
+    private fun loadFolders() {
+        try {
+            folders.clear()
+            (prefs.getString("folders", "") ?: "").split("\n").filter { it.isNotEmpty() }.forEach { line ->
+                val p = line.split("\t")
+                if (p.size < 3) return@forEach
+                folders[p[0]] = Folder(p[1], p[2].split("|").filter { it.isNotEmpty() }.toMutableList())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "loadFolders", e)
+        }
+    }
+
+    private fun persist() {
+        try {
+            val foldersText = folders.entries.joinToString("\n") {
+                it.key + "\t" + it.value.name + "\t" + it.value.keys.joinToString("|")
+            }
+            prefs.edit()
+                .putString("home", homeSlots.joinToString("|") { it ?: "" })
+                .putString("dock", dockSlots.joinToString("|") { it ?: "" })
+                .putString("folders", foldersText)
+                .putInt("home_pages", pageCount)
+                .apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "persist", e)
+        }
+    }
+
+    private fun currentPack(): String =
+        getSharedPreferences("settings", MODE_PRIVATE).getString("icon_pack", "") ?: ""
+
+    private fun makeIntent(cn: ComponentName): Intent =
+        Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setComponent(cn)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+
+    private fun cacheFile(pack: String, key: String): File {
+        val dir = File(File(filesDir, "icons"), if (pack.isEmpty()) "default" else pack).apply { mkdirs() }
+        return File(dir, key.hashCode().toString() + ".png")
+    }
+
+    private fun loadIconFromDisk(pack: String, key: String): Bitmap? {
+        val mk = pack + "|" + key
+        iconLru.get(mk)?.let { return it }
+        return try {
+            val f = cacheFile(pack, key)
+            if (!f.exists() || f.length() == 0L) return null
+            BitmapFactory.decodeFile(f.path)?.also { iconLru.put(mk, it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "icon decode $key", e)
+            null
+        }
+    }
+
+    private fun showCachedApps() {
+        try {
+            val pack = currentPack()
+            val c = getSharedPreferences("app_cache", MODE_PRIVATE)
+            if (c.getString("tag", "") != pack + "|" + CACHE_VER) return
+            val lines = (c.getString("list", "") ?: "").split("\n").filter { it.isNotEmpty() }
+            val list = lines.mapNotNull { line ->
+                try {
+                    val parts = line.split("\t")
+                    if (parts.size < 2) return@mapNotNull null
+                    val cn = ComponentName.unflattenFromString(parts[0]) ?: return@mapNotNull null
+                    val bmp = loadIconFromDisk(pack, parts[0]) ?: return@mapNotNull null
+                    AppItem(parts[1], parts[0], makeIntent(cn), bmp)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (list.isEmpty()) return
+            allApps = list
+            filterApps("")
+            refreshHomeSafe()
+        } catch (e: Exception) {
+            Log.e(TAG, "showCachedApps", e)
+        }
+    }
+
+    private fun saveCache(apps: List<AppItem>, pack: String) {
+        try {
+            for (a in apps) {
+                val f = cacheFile(pack, a.key)
+                if (f.exists() && f.length() > 0) continue
+                FileOutputStream(f).use { out -> a.icon.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            }
+            getSharedPreferences("app_cache", MODE_PRIVATE).edit()
+                .putString("tag", pack + "|" + CACHE_VER)
+                .putString("list", apps.joinToString("\n") { it.key + "\t" + it.label })
+                .apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "saveCache", e)
+        }
+    }
+
+    private fun loadApps() {
+        if (bg.isShutdown) return
+        val pack = currentPack()
+        bg.execute {
+            try {
+                val pm = packageManager
+                val sizePx = dp(96)
+                val packMap = if (pack.isNotEmpty()) IconPack.map(this, pack) else null
+                val packCtx = if (pack.isNotEmpty()) IconPack.context(this, pack) else null
+                val main = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                val apps = pm.queryIntentActivities(main, 0).mapNotNull { ri ->
+                    try {
+                        val cn = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name)
+                        val key = cn.flattenToString()
+                        val icon = loadIconFromDisk(pack, key)
+                            ?: makeIcon(pack, packMap, packCtx, ri, pm, sizePx).also { iconLru.put(pack + "|" + key, it) }
+                        AppItem(ri.loadLabel(pm).toString(), key, makeIntent(cn), icon)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "app item", e)
+                        null
+                    }
+                }.sortedBy { it.label.lowercase() }
+                saveCache(apps, pack)
+                runOnUiThread {
+                    try {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        allApps = apps
+                        appsLoaded = true
+                        loadedPack = pack
+                        filterApps(searchBox.text?.toString() ?: "")
+                        refreshHomeSafe()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "apps ui", e)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "loadApps", e)
+            }
+        }
+    }
+
+    private fun makeIcon(
+        pack: String,
+        packMap: Map<String, String>?,
+        packCtx: Context?,
+        ri: ResolveInfo,
+        pm: PackageManager,
+        size: Int
+    ): Bitmap {
+        val key = ComponentName(ri.activityInfo.packageName, ri.activityInfo.name).flattenToString()
+        val packDraw = if (pack.isNotEmpty() && packMap != null && packCtx != null) {
+            packMap[key]?.let { IconPack.drawable(packCtx, it) }
+        } else null
+        val src: Drawable = packDraw ?: ri.loadIcon(pm)
+        return squareIcon(src, size)
+    }
+
+    private fun squareIcon(dr: Drawable, size: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        try {
+            if (dr is AdaptiveIconDrawable) {
+                dr.background?.let { it.setBounds(0, 0, size, size); it.draw(c) }
+                dr.foreground?.let { it.setBounds(0, 0, size, size); it.draw(c) }
+            } else {
+                dr.setBounds(0, 0, size, size)
+                dr.draw(c)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "squareIcon", e)
+        }
+        return bmp
+    }
+
+    private fun buildMap(): Map<String, AppItem> {
+        val m = HashMap<String, AppItem>()
+        allApps.forEach { m[it.key] = it }
+        for ((id, f) in folders) {
+            val items = f.keys.mapNotNull { m[it] }
+            val sig = id + "|" + f.name + "|" + items.joinToString(",") { it.key }
+            val icon = if (folderIconKey == sig && folderIconCache != null) {
+                folderIconCache!!
+            } else {
+                makeFolderIcon(items).also {
+                    folderIconKey = sig
+                    folderIconCache = it
+                }
+            }
+            m[FOLDER_PREFIX + id] = AppItem(f.name, FOLDER_PREFIX + id, Intent(Intent.ACTION_MAIN), icon)
+        }
+        return m
+    }
+
+    private fun makeFolderIcon(items: List<AppItem>): Bitmap {
+        val size = dp(96)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        try {
+            c.drawRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), Paint().apply { color = 0xCC2A2A30.toInt() })
+            val pad = size * 0.12f
+            val gap = size * 0.06f
+            val mini = (size - 2 * pad - gap) / 2f
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            items.take(4).forEachIndexed { i, item ->
+                val x = pad + (i % 2) * (mini + gap)
+                val y = pad + (i / 2) * (mini + gap)
+                c.drawBitmap(item.icon, null, RectF(x, y, x + mini, y + mini), p)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "folderIcon", e)
+        }
+        return bmp
+    }
+
+    private fun refreshHomeSafe() {
+        try {
+            refreshHome()
+        } catch (e: Exception) {
+            Log.e(TAG, "refreshHome", e)
+        }
+    }
+
+    private fun refreshHome() {
+        val map = buildMap()
+        for (p in 0 until pageAdapters.size) {
+            val from = p * PAGE_CELLS
+            val to = minOf(from + PAGE_CELLS, homeSlots.size)
+            if (from >= to) break
+            pageAdapters[p].submitDiff(homeSlots.subList(from, to).map { k -> k?.let { map[it] } })
+        }
+        dockAdapter.submitDiff(dockSlots.map { k -> k?.let { map[it] } })
+        hint.visibility = if (homeSlots.all { it == null }) View.VISIBLE else View.GONE
+        updateDots()
+        if (folderOpen) refreshFolderPopup()
+    }
+
+    private fun applyHomeBlurUnused() {}
 }
 
 data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean, val gapH: Int, val gapV: Int)
@@ -2479,8 +2402,7 @@ class AppAdapter(
 
     fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
 
-    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) :
-        RecyclerView.ViewHolder(root)
+    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) : RecyclerView.ViewHolder(root)
 
     override fun getItemId(position: Int): Long =
         items.getOrNull(position)?.key?.hashCode()?.toLong() ?: (1_000_000_000L + position)
@@ -2536,9 +2458,7 @@ class AppAdapter(
 
             h.icon.visibility = View.VISIBLE
             val current = (h.icon.drawable as? BitmapDrawable)?.bitmap
-            if (current !== item.icon) {
-                h.icon.setImageBitmap(item.icon)
-            }
+            if (current !== item.icon) h.icon.setImageBitmap(item.icon)
 
             val showText = showLabel && style.labels
             h.label.visibility = if (showText) View.VISIBLE else View.GONE
