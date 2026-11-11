@@ -122,6 +122,7 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
+/** Icon shape GPU outline se (0 squircle, 1 circle, 2 square). */
 class ShapeIcon(ctx: Context) : ImageView(ctx) {
     var shape = 0
         set(v) {
@@ -147,6 +148,7 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
+/** App open animation: icon ki jagah se sheet phailti hai. */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -216,8 +218,8 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
 }
 
 /**
- * Touch layer. Drawer ke app par 200ms hold ke baad upar khinchne par cross-drag shuru hota hai.
- * Left, right, bottom edge ke touches intercept nahi hote (system gesture ke liye).
+ * Touch layer. Drawer app par 200ms hold ke baad upar khinchne par cross-drag (home mein add).
+ * Ek hi touch event ko do baar process nahi karta.
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -239,8 +241,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
     private val edgePx = 24 * ctx.resources.displayMetrics.density
-    private var downX = 0f
     private var downY = 0f
+    private var downX = 0f
     private var rawDownX = 0f
     private var rawDownY = 0f
     private var dragging = false
@@ -251,6 +253,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private var armed = false
     private var downItem: AppItem? = null
     private var vt: VelocityTracker? = null
+    private var lastEventTime = -1L
+    private var lastAction = -1
 
     private val longPressRunnable = Runnable {
         try {
@@ -265,8 +269,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     private val armRunnable = Runnable { armed = true }
 
-    private fun cancelLong() = removeCallbacks(longPressRunnable)
-
     override fun onDetachedFromWindow() {
         removeCallbacks(longPressRunnable)
         removeCallbacks(armRunnable)
@@ -279,6 +281,10 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         x < edgePx || x > width - edgePx || y > height - edgePx
 
     private fun track(e: MotionEvent) {
+        // Same event do baar aaye to skip (intercept + touch dono se aata hai)
+        if (e.eventTime == lastEventTime && e.actionMasked == lastAction) return
+        lastEventTime = e.eventTime
+        lastAction = e.actionMasked
         try {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -293,7 +299,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     armed = false
                     downItem = host.itemAtRaw(e.rawX, e.rawY)
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
-                    cancelLong()
+                    removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
                     if (downItem != null) postDelayed(armRunnable, 200L)
                     if (!ignoring) postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
@@ -311,23 +317,23 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     val dy = e.y - downY
                     val dx = e.x - downX
                     if (!dragging && !pageDragging) {
-                        if (abs(dy) > slop || abs(dx) > slop) cancelLong()
+                        if (abs(dy) > slop || abs(dx) > slop) removeCallbacks(longPressRunnable)
                         val item = downItem
                         if (item != null && armed && dy < -slop && abs(dy) > abs(dx)) {
-                            cancelLong()
+                            removeCallbacks(longPressRunnable)
                             crossing = true
                             host.onCrossStart(item, e.rawX, e.rawY)
                             parent?.requestDisallowInterceptTouchEvent(true)
                             return
                         }
                         if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy, rawDownY)) {
-                            cancelLong()
+                            removeCallbacks(longPressRunnable)
                             dragging = true
                             host.onDragStart()
                             host.onDrag(dy)
                             parent?.requestDisallowInterceptTouchEvent(true)
                         } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && host.canStartPageSwipe(dx)) {
-                            cancelLong()
+                            removeCallbacks(longPressRunnable)
                             pageDragging = true
                             host.onPageDrag(dx)
                             parent?.requestDisallowInterceptTouchEvent(true)
@@ -339,7 +345,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    cancelLong()
+                    removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
                     armed = false
                     if (crossing) {
@@ -403,7 +409,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val CACHE_VER = "v7"
+        private const val CACHE_VER = "v8"
         private const val STATE_PAGE = "state_page"
         private const val STATE_FOLDER = "state_folder"
         private const val LAUNCH_RESET_MS = 4000L
@@ -423,12 +429,10 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var folderIconKey = ""
     private var launchToken: Any? = null
     private var returningFromApp = false
-
     private var crossItem: AppItem? = null
     private var ghost: ImageView? = null
     private var crossRootTop = 0
     private var barOver = false
-    private var snapView: ImageView? = null
 
     private lateinit var root: GestureRoot
     private lateinit var stage: FrameLayout
@@ -474,10 +478,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var drawerGapH = 8
     private var drawerGapV = 12
     private var listBottomGap = 0
-
     private var fxIntro = true
     private var pageAnim = true
-    private var introPending = true
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
@@ -512,15 +514,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private var depth = 0f
     private var launchAnim: ValueAnimator? = null
     private var closeAnim: ValueAnimator? = null
-    private var menuAnim: ValueAnimator? = null
+    private var introAnim: ValueAnimator? = null
 
     private val userPresentReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             try {
-                if (i.action == Intent.ACTION_USER_PRESENT) {
-                    introPending = true
-                    runIntroIfNeeded()
-                }
+                if (i.action == Intent.ACTION_USER_PRESENT) playIntro()
             } catch (e: Exception) {
                 Log.e(TAG, "userPresent", e)
             }
@@ -544,9 +543,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun closeAnimEnabled(): Boolean =
-        getSharedPreferences("settings", MODE_PRIVATE).getBoolean("close_anim", true)
 
     private inner class GridGuide : RecyclerView.ItemDecoration() {
         var visible = false
@@ -640,10 +636,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             applyDockStyle()
             if (!appsLoaded || currentPack() != loadedPack) loadApps()
             if (wasReturning) {
-                introPending = true
-                playCloseAnim()
+                // Layout ready hone ke baad close animation + icons ka stagger
+                root.post {
+                    playCloseAnim()
+                    playIntro()
+                }
             }
-            runIntroIfNeeded()
         } catch (e: Exception) {
             Log.e(TAG, "onResume", e)
         }
@@ -654,8 +652,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         try {
             pageAnimator?.cancel()
             folderAnim?.cancel()
-            closeAnim?.cancel()
-            menuAnim?.cancel()
         } catch (e: Exception) {
             Log.e(TAG, "onPause", e)
         }
@@ -718,7 +714,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             folderAnim?.cancel()
             launchAnim?.cancel()
             closeAnim?.cancel()
-            menuAnim?.cancel()
+            introAnim?.cancel()
         } catch (e: Exception) {
             Log.e(TAG, "destroyCancel", e)
         }
@@ -771,7 +767,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Snapshot (item 7: crash ke time fake home) ----------------
+    // ---------------- Snapshot (crash / restart par fake home) ----------------
 
     private fun captureSnapshot() {
         try {
@@ -782,18 +778,16 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val bmp = Bitmap.createBitmap((w * s).toInt(), (h * s).toInt(), Bitmap.Config.RGB_565)
             val c = Canvas(bmp)
             c.scale(s, s)
-            val ov = overlay.visibility
-            overlay.visibility = View.GONE
             val ss = stage.scaleX
             val sa = stage.alpha
             stage.scaleX = 1f
             stage.scaleY = 1f
             stage.alpha = 1f
+            overlay.visibility = View.GONE
             root.draw(c)
             stage.scaleX = ss
             stage.scaleY = ss
             stage.alpha = sa
-            overlay.visibility = ov
             val out = File(filesDir, SNAP_FILE)
             bg.execute {
                 try {
@@ -817,11 +811,9 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 setImageBitmap(bmp)
             }
             root.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
-            snapView = iv
             root.post {
-                iv.animate().alpha(0f).setDuration(180).withEndAction {
+                iv.animate().alpha(0f).setDuration(200).withEndAction {
                     try { root.removeView(iv) } catch (_: Exception) {}
-                    if (snapView === iv) snapView = null
                 }.start()
             }
         } catch (e: Exception) {
@@ -1225,7 +1217,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             pageAnimator?.cancel()
             if (animated && pageAnim) {
                 val a = ValueAnimator.ofFloat(pageOffset, end)
-                a.duration = 280
+                a.duration = 260
                 a.interpolator = emphasized
                 a.addUpdateListener { setPageOffset(it.animatedValue as Float) }
                 pageAnimator = a
@@ -1318,18 +1310,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         dragHelper(dockAdapter, -1, dock, null, false).attachToRecyclerView(dock)
     }
 
-    // ---------------- Intro (home icons stagger) ----------------
-
-    private fun runIntroIfNeeded() {
-        if (!introPending) return
-        if (progress > 0.01f || pendingReturn || folderOpen) return
-        introPending = false
-        if (!fxIntro) return
-        window.decorView.post { playIntro() }
-    }
+    // ---------------- Intro: home icons stagger (unlock aur app close par) ----------------
 
     private fun playIntro() {
         try {
+            if (!fxIntro) return
+            if (progress > 0.01f || folderOpen) return
             val page = pageGrids.getOrNull(currentPage) ?: return
             val items = ArrayList<Pair<View, Int>>()
             for (i in 0 until page.childCount) {
@@ -1604,7 +1590,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Drawer ke andar us point par app (sirf jab drawer khula ho). */
     override fun itemAtRaw(rawX: Float, rawY: Float): AppItem? {
         try {
             if (folderOpen || progress < 0.5f) return null
@@ -1620,7 +1605,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Item 1: drawer se cross-drag ----------------
+    // ---------------- Drawer se home cross-drag ----------------
 
     override fun onCrossStart(item: AppItem, rawX: Float, rawY: Float) {
         try {
@@ -1704,7 +1689,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Item 6: lehar (wave) ----------------
+    // ---------------- Lehar (wave) on hold ----------------
 
     private fun waveFrom(rv: RecyclerView, rawX: Float, rawY: Float) {
         try {
@@ -1729,7 +1714,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- Search (item 3: rubber rows, niche se) ----------------
+    // ---------------- Search: rows ek-ek karke rubber se ----------------
 
     private fun setSearchMode(on: Boolean) {
         try {
@@ -1753,7 +1738,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Har row ek ek karke neeche se rubber (overshoot) ke saath aati hai. */
     private fun playRows(show: Boolean) {
         val rv = drawerList
         for (i in 0 until rv.childCount) {
@@ -1782,6 +1766,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             Log.e(TAG, "filterApps", e)
         }
     }
+
+    // ---------------- Drawer progress (spring) ----------------
 
     private fun dist() = maxOf(1f, root.height * 0.5f)
 
@@ -1814,7 +1800,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             drawer.alpha = p
             drawer.translationY = (1f - p) * 0.25f * h
             home.alpha = 1f - p
-            val s = 1f - 0.08f * p
+            val s = 1f - 0.06f * p
             home.scaleX = s
             home.scaleY = s
             val dv = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
@@ -1875,7 +1861,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         try {
             folderAnim?.cancel()
             val a = ValueAnimator.ofFloat(folderF, target)
-            a.duration = if (target > 0f) 340L else 240L
+            a.duration = if (target > 0f) 320L else 220L
             a.interpolator = if (target > 0f) OvershootInterpolator(0.7f) else emphasized
             a.addUpdateListener {
                 val f = it.animatedValue as Float
@@ -2103,7 +2089,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- App menu (item 2: box animation) ----------------
+    // ---------------- App menu (box animation) ----------------
 
     private fun showMenu(item: AppItem) {
         val pkg = item.intent.component?.packageName ?: return
@@ -2123,7 +2109,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** User app ya update hua system app (Samsung) ko uninstall allow. */
+    /** User app ya update hua system app (Samsung) uninstall allow. */
     private fun isUserApp(pkg: String): Boolean = try {
         val ai = packageManager.getApplicationInfo(pkg, 0)
         (ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
@@ -2131,7 +2117,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         false
     }
 
-    /** Uninstall: pehle ACTION_DELETE, handler na mile to App info. */
+    /** Uninstall: ACTION_DELETE, handler na mile to App info. */
     private fun uninstallApp(pkg: String) {
         try {
             val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg"))
@@ -2196,7 +2182,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 setLayout(MATCH, WRAP)
                 setDimAmount(0.4f)
             }
-            // Box animation: card icon ki taraf se scale-up hota hai
             d.setOnShowListener {
                 card.pivotX = card.width / 2f
                 card.pivotY = dp(56).toFloat()
@@ -2274,10 +2259,11 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Item 5: animation poora hone ke baad app start, drawer band, home ready. */
+    /** Animation poora hone ke baad hi app start, drawer band, home ready. */
     private fun startApp(item: AppItem) {
         try {
             setProgress(0f)
+            searching = false
             captureSnapshot()
             val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
@@ -2306,21 +2292,26 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Item 4: app se wapas aane par launcher ka fade-in. */
+    /** App se wapas aane par launcher ka fade + scale-in. */
     private fun playCloseAnim() {
         try {
-            if (!closeAnimEnabled()) return
+            if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("close_anim", true)) {
+                stage.alpha = 1f
+                stage.scaleX = 1f
+                stage.scaleY = 1f
+                return
+            }
             closeAnim?.cancel()
             stage.alpha = 0f
-            stage.scaleX = 0.97f
-            stage.scaleY = 0.97f
+            stage.scaleX = 0.96f
+            stage.scaleY = 0.96f
             val a = ValueAnimator.ofFloat(0f, 1f)
-            a.duration = 240
+            a.duration = 260
             a.interpolator = emphasized
             a.addUpdateListener {
                 val v = it.animatedValue as Float
                 stage.alpha = v
-                val s = 0.97f + 0.03f * v
+                val s = 0.96f + 0.04f * v
                 stage.scaleX = s
                 stage.scaleY = s
             }
@@ -2650,8 +2641,10 @@ class AppAdapter(
     private var items: List<AppItem?> = emptyList()
     private var style = IconStyle(60, 0, true, 8, 12)
 
-    init { setHasStableIds(true) }
+    init {
+        setHasStableIds(true)
+    }
 
-    fun submit(list: List<AppItem?>) {
-        items = list.toList()
-        notifyDataSetCha
+    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) : RecyclerView.ViewHolder(root)
+
+    /** Poori list badalti hai. */
