@@ -243,7 +243,6 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
  * Touch layer. Ek hi jagah gesture ka faisla hota hai.
  * - Long press (500ms) sirf tab, jab touch bilkul na hila ho aur list scroll na ho rahi ho.
  * - Vertical drag (drawer kholna/band karna) aur horizontal page swipe.
- * Intercept aur touch dono se aane wale same event ko ek hi baar process karta hai.
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -284,7 +283,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     }
 
     /** Scroll shuru hone par bahar se call hota hai. */
-    fun cancelLongPress() {
+    fun cancelLongTimer() {
         removeCallbacks(longRunnable)
         if (mode == MODE_PENDING) moved = true
     }
@@ -932,14 +931,13 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
             setPadding(dp(8), dp(64), dp(8), 0)
-            // Scroll shuru hote hi long-press band
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                    if (newState != RecyclerView.SCROLL_STATE_IDLE) root.cancelLongPress()
+                    if (newState != RecyclerView.SCROLL_STATE_IDLE) root.cancelLongTimer()
                 }
 
                 override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                    root.cancelLongPress()
+                    root.cancelLongTimer()
                 }
             })
         }
@@ -1641,6 +1639,30 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
+    /** Home grid par long press pe nearby icons ka halka wave. */
+    private fun waveFrom(rv: RecyclerView, rawX: Float, rawY: Float) {
+        try {
+            val loc = IntArray(2)
+            for (i in 0 until rv.childCount) {
+                val v = rv.getChildAt(i)
+                v.getLocationOnScreen(loc)
+                val cx = loc[0] + v.width / 2f
+                val cy = loc[1] + v.height / 2f
+                val d = Math.hypot((cx - rawX).toDouble(), (cy - rawY).toDouble()).toFloat()
+                val delay = (d * 0.35f).toLong().coerceAtMost(420L)
+                v.animate().cancel()
+                v.animate().scaleX(0.9f).scaleY(0.9f).setStartDelay(delay).setDuration(120)
+                    .setInterpolator(DecelerateInterpolator())
+                    .withEndAction {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(320)
+                            .setInterpolator(OvershootInterpolator(2f)).start()
+                    }.start()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "wave", e)
+        }
+    }
+
     /** Drawer ke andar us point par app (sirf jab drawer khula ho). */
     private fun itemAtRaw(rawX: Float, rawY: Float): AppItem? {
         try {
@@ -1896,7 +1918,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         return onItem(dock, x, y)
     }
 
-    // ---------------- Popup (chhota rounded box, icon ke paas) ----------------
+    // ---------------- Popup ----------------
 
     private fun showPopup(rawX: Float, rawY: Float, heading: String, actions: List<Pair<String, () -> Unit>>) {
         try {
