@@ -297,7 +297,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
-                    if (downItem != null) postDelayed(armRunnable, 400L)
+                    if (downItem != null) postDelayed(armRunnable, 1111L)
                     if (!ignoring) postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
