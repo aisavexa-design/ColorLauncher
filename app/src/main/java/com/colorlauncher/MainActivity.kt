@@ -57,7 +57,6 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
@@ -122,7 +121,6 @@ class MoreIcon(ctx: Context) : View(ctx) {
     }
 }
 
-/** Icon shape GPU outline se (0 squircle, 1 circle, 2 square). */
 class ShapeIcon(ctx: Context) : ImageView(ctx) {
     var shape = 0
         set(v) {
@@ -218,8 +216,8 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
 }
 
 /**
- * Touch layer. Drawer app par 200ms hold ke baad upar khinchne par cross-drag (home mein add).
- * Ek hi touch event ko do baar process nahi karta.
+ * Touch layer. Drawer app par 400ms hold ke baad, seedha upar khinchne par cross-drag.
+ * Scroll cross-drag ko trigger nahi karta.
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -241,8 +239,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
     private val edgePx = 24 * ctx.resources.displayMetrics.density
-    private var downY = 0f
     private var downX = 0f
+    private var downY = 0f
     private var rawDownX = 0f
     private var rawDownY = 0f
     private var dragging = false
@@ -281,7 +279,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         x < edgePx || x > width - edgePx || y > height - edgePx
 
     private fun track(e: MotionEvent) {
-        // Same event do baar aaye to skip (intercept + touch dono se aata hai)
         if (e.eventTime == lastEventTime && e.actionMasked == lastAction) return
         lastEventTime = e.eventTime
         lastAction = e.actionMasked
@@ -301,7 +298,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
-                    if (downItem != null) postDelayed(armRunnable, 200L)
+                    if (downItem != null) postDelayed(armRunnable, 400L)
                     if (!ignoring) postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
@@ -319,7 +316,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     if (!dragging && !pageDragging) {
                         if (abs(dy) > slop || abs(dx) > slop) removeCallbacks(longPressRunnable)
                         val item = downItem
-                        if (item != null && armed && dy < -slop && abs(dy) > abs(dx)) {
+                        if (item != null && armed && dy < -slop * 2 && abs(dy) > abs(dx) * 2) {
                             removeCallbacks(longPressRunnable)
                             crossing = true
                             host.onCrossStart(item, e.rawX, e.rawY)
@@ -414,6 +411,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         private const val STATE_FOLDER = "state_folder"
         private const val LAUNCH_RESET_MS = 4000L
         private const val SNAP_FILE = "snap.png"
+        private const val POPUP_MS = 400L
     }
 
     private val bg = Executors.newSingleThreadExecutor()
@@ -636,7 +634,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             applyDockStyle()
             if (!appsLoaded || currentPack() != loadedPack) loadApps()
             if (wasReturning) {
-                // Layout ready hone ke baad close animation + icons ka stagger
                 root.post {
                     playCloseAnim()
                     playIntro()
@@ -780,14 +777,19 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             c.scale(s, s)
             val ss = stage.scaleX
             val sa = stage.alpha
-            stage.scaleX = 1f
-            stage.scaleY = 1f
-            stage.alpha = 1f
-            overlay.visibility = View.GONE
-            root.draw(c)
-            stage.scaleX = ss
-            stage.scaleY = ss
-            stage.alpha = sa
+            val ov = overlay.visibility
+            try {
+                stage.scaleX = 1f
+                stage.scaleY = 1f
+                stage.alpha = 1f
+                overlay.visibility = View.GONE
+                root.draw(c)
+            } finally {
+                stage.scaleX = ss
+                stage.scaleY = ss
+                stage.alpha = sa
+                overlay.visibility = ov
+            }
             val out = File(filesDir, SNAP_FILE)
             bg.execute {
                 try {
@@ -1310,7 +1312,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         dragHelper(dockAdapter, -1, dock, null, false).attachToRecyclerView(dock)
     }
 
-    // ---------------- Intro: home icons stagger (unlock aur app close par) ----------------
+    // ---------------- Intro: home icons stagger ----------------
 
     private fun playIntro() {
         try {
@@ -1536,7 +1538,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 val item = itemAtRaw(rawX, rawY) ?: return
                 waveFrom(drawerList, rawX, rawY)
                 window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                showMenu(item)
+                showMenu(item, rawX, rawY)
                 return
             }
             if (progress > 0.01f) return
@@ -1546,7 +1548,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             }
             if (inside(widgetBox, rawX, rawY)) return
             window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            showHomeMenu()
+            showHomeMenu(rawX, rawY)
         } catch (e: Exception) {
             Log.e(TAG, "emptyLongPress", e)
         }
@@ -1903,10 +1905,15 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
     private fun showFolderItemMenu(item: AppItem) {
         val id = currentFolderId ?: return
         val pkg = item.intent.component?.packageName ?: return
-        showSheet(item.label, item.icon, listOf(
-            "Remove from folder" to { removeFromFolder(id, item.key) },
-            "App info" to { openAppInfo(pkg) }
-        ))
+        showPopup(
+            resources.displayMetrics.widthPixels / 2f,
+            resources.displayMetrics.heightPixels / 2f,
+            item.label,
+            listOf(
+                "Remove from folder" to { removeFromFolder(id, item.key) },
+                "App info" to { openAppInfo(pkg) }
+            )
+        )
     }
 
     private fun removeFromFolder(id: String, key: String) {
@@ -1957,11 +1964,85 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         return onItem(dock, x, y)
     }
 
-    // ---------------- Home menu and widgets ----------------
+    // ---------------- Popup (chhota rounded box, icon ke paas) ----------------
 
-    private fun showHomeMenu() {
+    /** Chhota rounded box, (rawX, rawY) ke paas. Bottom sheet nahi. */
+    private fun showPopup(rawX: Float, rawY: Float, heading: String, actions: List<Pair<String, () -> Unit>>) {
+        try {
+            if (isFinishing || isDestroyed) return
+            val d = Dialog(this)
+            d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+            val boxW = dp(210)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(10), dp(6), dp(6))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(18).toFloat()
+                    setColor(0xF2202024.toInt())
+                }
+            }
+            card.addView(TextView(this).apply {
+                text = heading
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(12), dp(6), dp(12), dp(8))
+            })
+            for ((label, action) in actions) {
+                card.addView(TextView(this).apply {
+                    text = label
+                    textSize = 15f
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    setOnClickListener {
+                        d.dismiss()
+                        try { action() } catch (e: Exception) { Log.e(TAG, "action $label", e) }
+                    }
+                }, LinearLayout.LayoutParams(MATCH, WRAP))
+            }
+            d.setContentView(card, LinearLayout.LayoutParams(boxW, WRAP))
+            val screenW = resources.displayMetrics.widthPixels
+            val screenH = resources.displayMetrics.heightPixels
+            val xPos = (rawX - boxW / 2f).toInt().coerceIn(dp(8), screenW - boxW - dp(8))
+            val yPos = (rawY - dp(120)).toInt().coerceIn(dp(40), screenH - dp(300))
+            d.window?.apply {
+                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                setDimAmount(0.25f)
+                setWindowAnimations(0)
+                setGravity(Gravity.TOP or Gravity.START)
+                val lp = attributes
+                lp.x = xPos
+                lp.y = yPos
+                attributes = lp
+            }
+            d.setOnShowListener {
+                card.pivotX = boxW / 2f
+                card.pivotY = 0f
+                card.scaleX = 0.5f
+                card.scaleY = 0.5f
+                card.alpha = 0f
+                card.animate().scaleX(1f).scaleY(1f).alpha(1f)
+                    .setDuration(POPUP_MS).setInterpolator(OvershootInterpolator(0.9f)).start()
+            }
+            d.show()
+        } catch (e: Exception) {
+            Log.e(TAG, "showPopup", e)
+        }
+    }
+
+    private fun showMenu(item: AppItem, rawX: Float, rawY: Float) {
+        val pkg = item.intent.component?.packageName ?: return
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        actions.add("Add to Home" to { addTo(homeSlots, item.key, "Home") })
+        actions.add("Add to Dock" to { addTo(dockSlots, item.key, "Dock") })
+        actions.add("App info" to { openAppInfo(pkg) })
+        if (isUserApp(pkg)) actions.add("Uninstall" to { uninstallApp(pkg) })
+        showPopup(rawX, rawY, item.label, actions)
+    }
+
+    private fun showHomeMenu(rawX: Float, rawY: Float) {
         val clockOn = prefs.getBoolean("clock", true)
-        showSheet("Home screen", null, listOf(
+        showPopup(rawX, rawY, "Home screen", listOf(
             "Add widget" to { pickWidget() },
             (if (clockOn) "Hide clock" else "Show clock") to {
                 prefs.edit().putBoolean("clock", !clockOn).apply()
@@ -1971,6 +2052,8 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         ))
     }
 
+    // ---------------- Widgets ----------------
+
     private fun pickWidget() {
         try {
             val pm = packageManager
@@ -1979,9 +2062,12 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
                 Toast.makeText(this, "Koi widget installed nahi hai", Toast.LENGTH_SHORT).show()
                 return
             }
-            showSheet("Add widget", null, providers.map { info ->
-                info.loadLabel(pm).toString() to { bindWidget(info) }
-            })
+            showPopup(
+                resources.displayMetrics.widthPixels / 2f,
+                resources.displayMetrics.heightPixels / 2f,
+                "Add widget",
+                providers.map { info -> info.loadLabel(pm).toString() to { bindWidget(info) } }
+            )
         } catch (e: Exception) {
             Log.e(TAG, "pickWidget", e)
         }
@@ -2044,11 +2130,16 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
             val hv: AppWidgetHostView = widgetHost.createView(this, id, info)
             hv.tag = id
             hv.setOnLongClickListener {
-                showSheet("Widget", null, listOf("Remove widget" to {
-                    try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
-                    widgetBox.removeView(hv)
-                    saveWidgetIds()
-                }))
+                showPopup(
+                    resources.displayMetrics.widthPixels / 2f,
+                    resources.displayMetrics.heightPixels / 2f,
+                    "Widget",
+                    listOf("Remove widget" to {
+                        try { widgetHost.deleteAppWidgetId(id) } catch (_: Exception) {}
+                        widgetBox.removeView(hv)
+                        saveWidgetIds()
+                    })
+                )
                 true
             }
             widgetBox.addView(hv, LinearLayout.LayoutParams(MATCH, dp(max(info.minHeight, 60))).apply {
@@ -2089,17 +2180,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    // ---------------- App menu (box animation) ----------------
-
-    private fun showMenu(item: AppItem) {
-        val pkg = item.intent.component?.packageName ?: return
-        val actions = mutableListOf<Pair<String, () -> Unit>>()
-        actions.add("Add to Home" to { addTo(homeSlots, item.key, "Home") })
-        actions.add("Add to Dock" to { addTo(dockSlots, item.key, "Dock") })
-        actions.add("App info" to { openAppInfo(pkg) })
-        if (isUserApp(pkg)) actions.add("Uninstall" to { uninstallApp(pkg) })
-        showSheet(item.label, item.icon, actions)
-    }
+    // ---------------- App info, uninstall ----------------
 
     private fun openAppInfo(pkg: String) {
         try {
@@ -2109,7 +2190,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** User app ya update hua system app (Samsung) uninstall allow. */
+    /** User app ya update hua system app uninstall allow. */
     private fun isUserApp(pkg: String): Boolean = try {
         val ai = packageManager.getApplicationInfo(pkg, 0)
         (ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 || (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
@@ -2117,7 +2198,6 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         false
     }
 
-    /** Uninstall: ACTION_DELETE, handler na mile to App info. */
     private fun uninstallApp(pkg: String) {
         try {
             val intent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg"))
@@ -2128,74 +2208,7 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    private fun showSheet(heading: String, icon: Bitmap?, actions: List<Pair<String, () -> Unit>>) {
-        try {
-            if (isFinishing || isDestroyed) return
-            val d = Dialog(this)
-            d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), dp(16), dp(8), dp(8))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(28).toFloat()
-                    setColor(0xF2202024.toInt())
-                }
-            }
-            val head = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), 0, dp(16), dp(8))
-                if (icon != null) {
-                    addView(ImageView(this@MainActivity).apply { setImageBitmap(icon) },
-                        LinearLayout.LayoutParams(dp(40), dp(40)))
-                }
-                addView(TextView(this@MainActivity).apply {
-                    text = heading
-                    textSize = 18f
-                    setTextColor(Color.WHITE)
-                    typeface = Typeface.DEFAULT_BOLD
-                    setPadding(if (icon != null) dp(12) else 0, 0, 0, 0)
-                })
-            }
-            card.addView(head)
-            for ((label, action) in actions) {
-                card.addView(TextView(this).apply {
-                    text = label
-                    textSize = 16f
-                    setTextColor(Color.WHITE)
-                    setPadding(dp(16), dp(14), dp(16), dp(14))
-                    setOnClickListener {
-                        d.dismiss()
-                        try { action() } catch (e: Exception) { Log.e(TAG, "action $label", e) }
-                    }
-                }, LinearLayout.LayoutParams(MATCH, WRAP))
-            }
-            val scroll = ScrollView(this).apply { addView(card, MATCH, WRAP) }
-            val wrap = FrameLayout(this).apply {
-                setPadding(dp(12), 0, dp(12), dp(24))
-                addView(scroll, MATCH, WRAP)
-            }
-            d.setContentView(wrap)
-            d.window?.apply {
-                setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-                setGravity(Gravity.BOTTOM)
-                setLayout(MATCH, WRAP)
-                setDimAmount(0.4f)
-            }
-            d.setOnShowListener {
-                card.pivotX = card.width / 2f
-                card.pivotY = dp(56).toFloat()
-                card.scaleX = 0.6f
-                card.scaleY = 0.6f
-                card.alpha = 0f
-                card.animate().scaleX(1f).scaleY(1f).alpha(1f)
-                    .setDuration(280).setInterpolator(OvershootInterpolator(1.1f)).start()
-            }
-            d.show()
-        } catch (e: Exception) {
-            Log.e(TAG, "showSheet", e)
-        }
-    }
+    // ---------------- Add to home / dock ----------------
 
     private fun addTo(slots: MutableList<String?>, key: String, name: String) {
         try {
@@ -2259,12 +2272,10 @@ class MainActivity : ComponentActivity(), GestureRoot.Host {
         }
     }
 
-    /** Animation poora hone ke baad hi app start, drawer band, home ready. */
+    /** Animation ke baad app start. Home ko reset nahi karte, overlay app khulne tak dhakta hai. */
     private fun startApp(item: AppItem) {
         try {
-            setProgress(0f)
             searching = false
-            captureSnapshot()
             val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
             closeFolderInstant()
@@ -2631,129 +2642,9 @@ fun readIconStyle(ctx: Context): IconStyle {
         p.getInt("gap_v", 12)
     )
 }
+
 class AppAdapter(
     private val showLabel: Boolean,
     private val onClick: (View, AppItem) -> Unit,
     private val onLong: ((AppItem) -> Unit)?
-) : RecyclerView.Adapter<AppAdapter.VH>() {
-
-    private var items: List<AppItem?> = emptyList()
-    private var style = IconStyle(60, 0, true, 8, 12)
-
-    init {
-        setHasStableIds(true)
-    }
-
-    class VH(val root: LinearLayout, val icon: ShapeIcon, val label: TextView) : RecyclerView.ViewHolder(root)
-
-    /** Poori list badalti hai. */
-    fun submit(list: List<AppItem?>) {
-        items = list.toList()
-        notifyDataSetChanged()
-    }
-
-    /** DiffUtil: sirf badle hue cells update. */
-    fun submitDiff(list: List<AppItem?>) {
-        val old = items
-        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-            override fun getOldListSize() = old.size
-            override fun getNewListSize() = list.size
-            override fun areItemsTheSame(o: Int, n: Int) = old[o]?.key == list[n]?.key
-            override fun areContentsTheSame(o: Int, n: Int): Boolean {
-                val a = old[o]
-                val b = list[n]
-                return a?.key == b?.key && a?.label == b?.label && a?.icon === b?.icon
-            }
-        })
-        items = list.toList()
-        diff.dispatchUpdatesTo(this)
-    }
-
-    fun applyStyle(s: IconStyle) {
-        style = s
-        notifyDataSetChanged()
-    }
-
-    fun itemAt(pos: Int): AppItem? = items.getOrNull(pos)
-
-    override fun getItemId(position: Int): Long =
-        items.getOrNull(position)?.key?.hashCode()?.toLong() ?: (1_000_000_000L + position)
-
-    override fun getItemCount(): Int = items.size
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-        val ctx = parent.context
-        val d = ctx.resources.displayMetrics.density
-        val icon = ShapeIcon(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams((56 * d).toInt(), (56 * d).toInt())
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        val label = TextView(ctx).apply {
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 11f
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            maxLines = 1
-            gravity = Gravity.CENTER
-            setPadding(0, (6 * d).toInt(), 0, 0)
-        }
-        val root = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            layoutParams = RecyclerView.LayoutParams(MATCH, WRAP)
-            addView(icon)
-            addView(label)
-        }
-        return VH(root, icon, label)
-    }
-
-    override fun onBindViewHolder(h: VH, position: Int) {
-        try {
-            val d = h.root.resources.displayMetrics.density
-            val px = (style.sizeDp * d).toInt()
-            val lp = h.icon.layoutParams
-            if (lp.width != px || lp.height != px) {
-                lp.width = px
-                lp.height = px
-                h.icon.layoutParams = lp
-            }
-            h.icon.shape = style.shape
-
-            val item = items.getOrNull(position)
-            if (item == null) {
-                h.icon.setImageDrawable(null)
-                h.icon.visibility = View.INVISIBLE
-                h.label.visibility = View.GONE
-                h.root.setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
-                h.root.setOnClickListener(null)
-                h.root.setOnTouchListener(null)
-                return
-            }
-
-            h.icon.visibility = View.VISIBLE
-            val current = (h.icon.drawable as? BitmapDrawable)?.bitmap
-            if (current !== item.icon) h.icon.setImageBitmap(item.icon)
-
-            val showText = showLabel && style.labels
-            h.label.visibility = if (showText) View.VISIBLE else View.GONE
-            h.label.text = item.label
-
-            val vPad = if (showText) 12 else 8
-            h.root.setPadding(0, (vPad * d).toInt(), 0, (vPad * d).toInt())
-
-            h.root.setOnClickListener { onClick(h.icon, item) }
-            h.root.setOnTouchListener { _, e ->
-                when (e.action) {
-                    MotionEvent.ACTION_DOWN ->
-                        h.root.animate().scaleX(0.92f).scaleY(0.92f).setDuration(80)
-                            .setInterpolator(DecelerateInterpolator()).start()
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                        h.root.animate().scaleX(1f).scaleY(1f).setDuration(220)
-                            .setInterpolator(OvershootInterpolator(2f)).start()
-                }
-                false
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "bind $position", e)
-        }
-    }
-}
+) : RecyclerView.Adapter<AppAdapter.VH>(
