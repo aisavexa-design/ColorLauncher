@@ -1,7 +1,8 @@
 package com.colorlauncher
-private const val TAG = "CL"
 
+import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -11,11 +12,10 @@ import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.graphics.Typeface
-import android.util.Log
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 
+private const val TAG = "CL"
 private const val MATCH_P = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP_P = ViewGroup.LayoutParams.WRAP_CONTENT
 
