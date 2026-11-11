@@ -2641,12 +2641,3 @@ fun readIconStyle(ctx: Context): IconStyle {
         p.getInt("gap_v", 12)
     )
 }
-
-class AppAdapter(
-    private val showLabel: Boolean,
-    private val onClick: (View, AppItem) -> Unit,
-    private val onLong: ((AppItem) -> Unit)?
-) : RecyclerView.Adapter<AppAdapter.VH>() {
-
-    private var items: List<AppItem?> = emptyList()
-    pr
