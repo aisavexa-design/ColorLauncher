@@ -1,4 +1,5 @@
 package com.colorlauncher
+private const val TAG = "CL"
 
 import android.graphics.drawable.BitmapDrawable
 import android.view.Gravity
