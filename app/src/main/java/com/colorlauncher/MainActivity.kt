@@ -218,7 +218,7 @@ class FadeRecycler(ctx: Context) : RecyclerView(ctx) {
  * Touch layer. Drawer app par 400ms hold ke baad, seedha upar khinchne par cross-drag.
  * Scroll cross-drag ko trigger nahi karta.
  */
-class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
+ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     interface Host {
         fun canStartDrag(dy: Float, rawStartY: Float): Boolean
@@ -277,7 +277,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
     private fun inEdge(x: Float, y: Float): Boolean =
         x < edgePx || x > width - edgePx || y > height - edgePx
 
-        private fun track(e: MotionEvent) {
+    private fun track(e: MotionEvent) {
         if (e.eventTime == lastEventTime && e.actionMasked == lastAction) return
         lastEventTime = e.eventTime
         lastAction = e.actionMasked
@@ -297,8 +297,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     ignoring = host.isBusy() || inEdge(e.x, e.y)
                     removeCallbacks(longPressRunnable)
                     removeCallbacks(armRunnable)
-                    if (downItem != null) postDelayed(armRunnable, 1000L)
-                    if (!ignoring) postDelayed(longPressRunnable, 500L)
+                    if (downItem != null) postDelayed(armRunnable, 800L)
+                    if (!ignoring) postDelayed(longPressRunnable, 900L)
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
@@ -381,8 +381,8 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
             pageDragging = false
             crossing = false
         }
-        }
-}
+    }
+
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
         return dragging || pageDragging || crossing
@@ -392,8 +392,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         track(e)
         return true
     }
-}
-
+ }
 class MainActivity : ComponentActivity(), GestureRoot.Host {
 
     companion object {
