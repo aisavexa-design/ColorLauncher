@@ -146,7 +146,6 @@ class ShapeIcon(ctx: Context) : ImageView(ctx) {
     }
 }
 
-/** App open animation: icon ki jagah se sheet phailti hai. */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val sheet = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -2647,4 +2646,7 @@ class AppAdapter(
     private val showLabel: Boolean,
     private val onClick: (View, AppItem) -> Unit,
     private val onLong: ((AppItem) -> Unit)?
-) : RecyclerView.Adapter<AppAdapter.VH>(
+) : RecyclerView.Adapter<AppAdapter.VH>() {
+
+    private var items: List<AppItem?> = emptyList()
+    pr
