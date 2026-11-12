@@ -14,7 +14,7 @@ object FeatureFlags {
     const val KEY_GLASS_CATEGORY = "glass_category"
 
     fun isCategoryDrawer(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DRAWER_CATEGORY, false)
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_DRAWER_CATEGORY, 0) == 1
 
     fun glassOn(ctx: Context, surfaceKey: String): Boolean {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
