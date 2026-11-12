@@ -17,7 +17,13 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     private var color = Color.DKGRAY
     private var icon: Bitmap? = null
     private var iconCorner = 0f
-    private val screenCorner = 56f * resources.displayMetrics.density
+
+    /** Animation shuru hote waqt corner radius (zyada round). */
+    private val startCorner = 56f * resources.displayMetrics.density
+
+    /** Animation khatam hone par corner radius (screen ke sath match). */
+    private val endCorner = 36f * resources.displayMetrics.density
+
     var t = 0f
         set(v) {
             field = v
@@ -43,7 +49,8 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
             from.bottom + (h - from.bottom) * tt
         )
         sheet.color = color
-        val rad = iconCorner + (screenCorner - iconCorner) * tt
+        // Start par startCorner se shuru, end tak endCorner tak ghatta hai
+        val rad = startCorner + (endCorner - startCorner) * tt
         canvas.drawRoundRect(cur, rad, rad, sheet)
         val bmp = icon ?: return
         val half = from.width() / 2f
