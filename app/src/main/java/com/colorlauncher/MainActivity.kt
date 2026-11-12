@@ -397,6 +397,15 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             { dp(it) },
             { p -> onDrawerProgress(p) }
         )
+                if (FeatureFlags.isCategoryDrawer(this)) {
+            val cat = CategoryDrawer(this, { v, i -> launch(v, i) }, { _, _, _ -> })
+            drawerView.list.visibility = View.GONE
+            drawerView.layer.addView(cat.view, 0, FrameLayout.LayoutParams(MATCH, MATCH))
+            categoryDrawer = cat
+        }
+        if (FeatureFlags.glassOn(this, FeatureFlags.KEY_GLASS_DRAWER)) {
+            drawerView.layer.background = GlassBackground.make(this, 0f)
+        }
 
         folderView = FolderView(
             this, emphasized,
