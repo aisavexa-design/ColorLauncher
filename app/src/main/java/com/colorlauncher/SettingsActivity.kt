@@ -178,6 +178,54 @@ class SettingsActivity : Activity() {
             setPadding(dp(8), dp(28), dp(8), dp(16))
         })
 
+                content.addView(sectionTitle("Drawer style"))
+        content.addView(card().apply {
+            addView(
+                chipRow(
+                    "App drawer", "Simple A-Z list ya iOS jaisi category cards",
+                    FeatureFlags.KEY_DRAWER_CATEGORY, listOf("Simple", "Category"), 0
+                )
+            )
+        })
+
+        content.addView(sectionTitle("Liquid glass"))
+        content.addView(card().apply {
+            addView(
+                switchRow(
+                    "Liquid glass",
+                    "Dock, folder, drawer aur categories par glass effect. Low RAM par simple rahega.",
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_MASTER, false)
+                ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_MASTER, it).apply() }
+            )
+            addView(divider())
+            addView(
+                switchRow(
+                    "Dock glass", "Dock ke peeche glass panel",
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_DOCK, true)
+                ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_DOCK, it).apply() }
+            )
+            addView(divider())
+            addView(
+                switchRow(
+                    "Folder glass", "Folder card ka glass background",
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_FOLDER, true)
+                ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_FOLDER, it).apply() }
+            )
+            addView(divider())
+            addView(
+                switchRow(
+                    "Drawer glass", "App drawer ka glass background",
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_DRAWER, true)
+                ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_DRAWER, it).apply() }
+            )
+            addView(divider())
+            addView(
+                switchRow(
+                    "Category glass", "Category cards ka glass background",
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_CATEGORY, true)
+                ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_CATEGORY, it).apply() }
+            )
+        })
         content.addView(sectionTitle("Animation"))
         content.addView(card().apply {
             addView(
