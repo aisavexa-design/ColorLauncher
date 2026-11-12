@@ -141,10 +141,14 @@ class HomeScreen(
             setRecycledViewPool(sharedPool)
             overScrollMode = View.OVER_SCROLL_NEVER
             itemAnimator = null
-            background = GradientDrawable().apply {
-                cornerRadius = dp(30).toFloat()
-                setColor(0x33FFFFFF)
-            }
+            background = if (FeatureFlags.glassOn(ctx, FeatureFlags.KEY_GLASS_DOCK)) {
+                GlassBackground.make(ctx, 30f)
+            } else {
+                GradientDrawable().apply {
+                    cornerRadius = dp(30).toFloat()
+                    setColor(0x33FFFFFF)
+                }
+             }           
             setPadding(dp(6), dp(6), dp(6), dp(6))
         }
         dockHolder = LinearLayout(ctx).apply {
