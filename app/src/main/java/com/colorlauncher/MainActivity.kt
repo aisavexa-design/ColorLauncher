@@ -614,7 +614,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun canLongPress(): Boolean {
         if (folderView.isOpen || pendingReturn || home.dragLock) return false
         if (drawerView.list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return false
-        if (drawerView.list.isComputingLayout) return false
         if (home.isPageAnimating()) return false
         return true
     }
