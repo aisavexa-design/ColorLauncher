@@ -17,7 +17,7 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
     private var color = Color.DKGRAY
     private var icon: Bitmap? = null
     private var iconCorner = 0f
-    private val screenCorner = 36f * resources.displayMetrics.density
+    private val screenCorner = 56f * resources.displayMetrics.density
     var t = 0f
         set(v) {
             field = v
