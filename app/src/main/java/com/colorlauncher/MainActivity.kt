@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var lastBottom = -1
     private var lastIme = -1
     private var dragBase = 0f
+    private var categoryDrawer: CategoryDrawer? = null
 
     private var pendingReturn = false
     private var returningFromApp = false
@@ -1014,8 +1015,9 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private fun applyApps(apps: List<AppItem>) {
         allApps = apps
         drawerView.submitApps(apps)
+        categoryDrawer?.submitApps(apps)
         onPagesChanged()
-    }
+        }
 
     private fun applyClock() {
         val on = prefs.getBoolean("clock", true)
