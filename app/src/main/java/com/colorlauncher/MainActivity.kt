@@ -526,6 +526,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
         if (home.layer.visibility != hv) home.layer.visibility = hv
         if (p < 0.001f && drawerView.searching) drawerView.setSearch(false, imm())
+        if (p < 0.001f) categoryDrawer?.showCategories()
     }
 
     private fun setProgress(p: Float) {
@@ -1038,6 +1039,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         try {
             val s = readIconStyle(this)
             drawerView.setStyle(s)
+            categoryDrawer?.applyStyle(s)
             home.setDockIconDp(dockIconDp())
             for (a in home.pageAdapters) a.applyStyle(s)
             home.dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
