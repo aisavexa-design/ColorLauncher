@@ -231,7 +231,7 @@ class DrawerView(
             Log.e(DV_TAG, "animateTo", e)
         }
     }
-
+    fun isAnimating(): Boolean = anim?.isRunning == true
     fun cancelAnim() {
         anim?.cancel()
     }
