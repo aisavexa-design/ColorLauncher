@@ -3,8 +3,12 @@ package com.colorlauncher
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.role.RoleManager
+import android.content.Context
 import android.content.Intent
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -19,33 +23,76 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 
+/** Floating glow particle (background ke liye). */
+private class Particle(val x: Float, val y: Float, val r: Float, val speed: Float, val alpha: Int)
+
+/** Background: AMOLED black par floating red particles. */
+private class ParticleView(ctx: Context) : View(ctx) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val particles = mutableListOf<Particle>()
+    private var phase = 0f
+
+    init {
+        val rnd = java.util.Random(7)
+        repeat(18) {
+            particles.add(
+                Particle(
+                    x = rnd.nextFloat(), y = rnd.nextFloat(),
+                    r = 2f + rnd.nextFloat() * 6f,
+                    speed = 0.02f + rnd.nextFloat() * 0.05f,
+                    alpha = 40 + rnd.nextInt(90)
+                )
+            )
+        }
+    }
+
+    fun tick(p: Float) {
+        phase = p
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        for (pt in particles) {
+            val y = ((pt.y - phase * pt.speed * 4f) % 1f + 1f) % 1f
+            paint.color = Color.argb(pt.alpha, 255, 82, 82)
+            canvas.drawCircle(pt.x * w, y * h, pt.r * resources.displayMetrics.density, paint)
+        }
+    }
+}
+
 /**
- * Pehli baar launch par premium intro. AMOLED black background, red glow orbs,
- * liquid glass cards, aur page transitions. Last page par "Choose default launcher"
- * aur "Created by Pratik".
+ * Premium English onboarding. AMOLED black, red glow orbs, floating particles,
+ * liquid glass cards, page-wise icon animation, smooth transitions.
+ * Last page par "Choose default launcher" aur "Created by Pratik".
  */
 class OnboardingActivity : Activity() {
 
-    private data class Page(val title: String, val subtitle: String, val body: String)
+    private data class Page(val title: String, val subtitle: String, val body: String, val icon: String)
 
     private val pages = listOf(
-        Page("Welcome", "Your new home screen", "Fast, fluid and built for a premium feel."),
-        Page("Smart drawer", "Simple A-Z or category view", "Pick the drawer style that suits you."),
-        Page("Liquid glass", "Glass on dock, folders and drawer", "Turn it on or off anytime in Settings."),
-        Page("Ready", "Let's get started", "Choose ColorLauncher as your default home.")
+        Page("Welcome", "Your new home screen", "Fast, fluid and built for a premium feel.", "\u2302"),
+        Page("Smart drawer", "Simple A-Z or category view", "Pick the drawer style that suits you.", "\u2630"),
+        Page("Liquid glass", "Glass on dock, folders and drawer", "Turn it on or off anytime in Settings.", "\u25C8"),
+        Page("Ready", "Let's get started", "Choose ColorLauncher as your default home.", "\u2713")
     )
 
     private var index = 0
     private lateinit var root: FrameLayout
+    private lateinit var particles: ParticleView
     private lateinit var orbA: View
     private lateinit var orbB: View
     private lateinit var card: LinearLayout
+    private lateinit var iconView: TextView
     private lateinit var titleView: TextView
     private lateinit var subView: TextView
     private lateinit var bodyView: TextView
     private lateinit var dots: LinearLayout
     private lateinit var nextBtn: TextView
     private lateinit var skipBtn: TextView
+    private var floatAnim: ValueAnimator? = null
 
     private val easeOut = PathInterpolator(0.2f, 0.8f, 0.2f, 1f)
 
@@ -58,7 +105,20 @@ class OnboardingActivity : Activity() {
         buildUi()
         showPage(0, animate = false)
         playEntrance()
-        startOrbFloat()
+        startFloat()
+    }
+
+    override fun onDestroy() {
+        floatAnim?.cancel()
+        super.onDestroy()
+    }
+
+    private fun orb(color: Int): View = View(this).apply {
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+        }
+        alpha = 0f
     }
 
     private fun buildUi() {
@@ -67,21 +127,11 @@ class OnboardingActivity : Activity() {
             clipChildren = true
         }
 
-        // Red glow orbs (background depth)
-        orbA = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x55E53935)
-            }
-            alpha = 0f
-        }
-        orbB = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x33FF5252)
-            }
-            alpha = 0f
-        }
+        particles = ParticleView(this)
+        root.addView(particles, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        orbA = orb(0x55E53935)
+        orbB = orb(0x33FF5252)
         root.addView(orbA, FrameLayout.LayoutParams(dp(300), dp(300), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
             topMargin = dp(40)
         })
@@ -104,23 +154,29 @@ class OnboardingActivity : Activity() {
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        // Glass card
         card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(26), dp(40), dp(26), dp(40))
+            setPadding(dp(26), dp(36), dp(26), dp(36))
             background = GlassBackground.make(this@OnboardingActivity, 32f)
+        }
+        iconView = TextView(this).apply {
+            textSize = 44f
+            setTextColor(0xFFE53935.toInt())
+            gravity = Gravity.CENTER
         }
         titleView = TextView(this).apply {
             textSize = 30f
             setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
         }
         subView = TextView(this).apply {
             textSize = 18f
             setTextColor(0xFFF2D7D7.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, dp(14), 0, 0)
+            setPadding(0, dp(12), 0, 0)
         }
         bodyView = TextView(this).apply {
             textSize = 15f
@@ -128,6 +184,7 @@ class OnboardingActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(0, dp(12), 0, 0)
         }
+        card.addView(iconView)
         card.addView(titleView)
         card.addView(subView)
         card.addView(bodyView)
@@ -148,7 +205,7 @@ class OnboardingActivity : Activity() {
         nextBtn = TextView(this).apply {
             textSize = 17f
             setTextColor(Color.BLACK)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setPadding(0, dp(18), 0, dp(18))
             background = GradientDrawable().apply {
@@ -190,21 +247,33 @@ class OnboardingActivity : Activity() {
         skipBtn.visibility = if (isLast) View.GONE else View.VISIBLE
 
         if (animate) {
-            // Slide out to left, then new content slides in from right with overshoot
             card.animate().alpha(0f).translationX(-dp(60).toFloat()).scaleX(0.92f).scaleY(0.92f)
                 .setDuration(180).setInterpolator(easeOut).withEndAction {
                     setText(p)
                     card.translationX = dp(60).toFloat()
                     card.animate().alpha(1f).translationX(0f).scaleX(1f).scaleY(1f)
                         .setDuration(420).setInterpolator(OvershootInterpolator(0.6f)).start()
+                    animateIcon()
                 }.start()
         } else {
             setText(p)
+            animateIcon()
         }
         drawDots()
     }
 
+    /** Har page ka icon pop-in karke ghoomta hai. */
+    private fun animateIcon() {
+        iconView.scaleX = 0.4f
+        iconView.scaleY = 0.4f
+        iconView.rotation = -25f
+        iconView.animate().scaleX(1f).scaleY(1f).rotation(0f)
+            .setDuration(550).setStartDelay(120)
+            .setInterpolator(OvershootInterpolator(1.4f)).start()
+    }
+
     private fun setText(p: Page) {
+        iconView.text = p.icon
         titleView.text = p.title
         subView.text = p.subtitle
         bodyView.text = p.body
@@ -232,11 +301,12 @@ class OnboardingActivity : Activity() {
             .setInterpolator(DecelerateInterpolator()).start()
         orbA.animate().alpha(1f).setDuration(1000).start()
         orbB.animate().alpha(1f).setStartDelay(200).setDuration(1100).start()
+        animateIcon()
     }
 
-    /** Orbs dheere-dheere float karte hain (glow ka living feel). */
-    private fun startOrbFloat() {
-        val a = ValueAnimator.ofFloat(0f, 1f).apply {
+    /** Orbs float, particles drift, aur ek loop jo sab ko ek saath chalata hai. */
+    private fun startFloat() {
+        floatAnim = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 4000
             repeatCount = ValueAnimator.INFINITE
             repeatMode = ValueAnimator.REVERSE
@@ -244,9 +314,12 @@ class OnboardingActivity : Activity() {
                 val t = it.animatedValue as Float
                 orbA.translationY = dp(18) * t
                 orbB.translationX = dp(14) * (1f - t)
+                orbA.scaleX = 1f + 0.06f * t
+                orbA.scaleY = 1f + 0.06f * t
+                particles.tick(t)
             }
+            start()
         }
-        a.start()
     }
 
     private fun onNext() {
