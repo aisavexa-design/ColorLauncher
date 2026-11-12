@@ -1,7 +1,5 @@
 package com.colorlauncher
 
-import android.view.View
-import android.widget.ImageView
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.util.Log
@@ -17,9 +15,9 @@ import android.widget.TextView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 
-private const val TAG = "CL"
-private const val MATCH_P = ViewGroup.LayoutParams.MATCH_PARENT
-private const val WRAP_P = ViewGroup.LayoutParams.WRAP_CONTENT
+private const val AA_TAG = "CL"
+private const val AA_MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+private const val AA_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 class AppAdapter(
     private val showLabel: Boolean,
@@ -87,7 +85,7 @@ class AppAdapter(
         val root = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            layoutParams = RecyclerView.LayoutParams(MATCH_P, WRAP_P)
+            layoutParams = RecyclerView.LayoutParams(AA_MATCH, AA_WRAP)
             addView(icon)
             addView(label)
         }
@@ -141,7 +139,7 @@ class AppAdapter(
                 false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "bind $position", e)
+            Log.e(AA_TAG, "bind $position", e)
         }
     }
 }
