@@ -1,5 +1,7 @@
 package com.colorlauncher
 
+import android.view.View
+import android.widget.ImageView
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.util.Log
