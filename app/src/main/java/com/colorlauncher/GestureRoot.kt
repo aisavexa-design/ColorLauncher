@@ -96,8 +96,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                         mode = MODE_IGNORE
                     } else {
                         mode = MODE_PENDING
-                        postDelayed(longRunnable, longMs)
-                    }
+                        // Drawer khula ho to long-press nahi (wahan scroll hota hai)
+                        if (!host.canLongPress()) {
+                            // timer start nahi
+                        } else {
+                            postDelayed(longRunnable, longMs)
+                        }
+                                        }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (mode == MODE_NONE || mode == MODE_IGNORE || mode == MODE_LONG) return
