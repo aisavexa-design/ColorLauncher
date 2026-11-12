@@ -19,20 +19,18 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
-import android.view.Window
 import android.view.WindowManager
 import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import java.io.FileOutputStream
@@ -42,15 +40,13 @@ import kotlin.math.roundToInt
 private const val TAG = "CL"
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-private const val COLS = 4
 private const val PAGE_CELLS = 24
-private const val DOCK_SLOTS = 4
 private const val MAX_PAGES = 10
 private const val FOLDER_PREFIX = "folder:"
 private const val LAUNCH_RESET_MS = 4000L
 private const val SNAP_FILE = "snap.png"
 
-class AppItem(val label: String, val key: String, val intent: android.content.Intent, val icon: Bitmap)
+class AppItem(val label: String, val key: String, val intent: Intent, val icon: Bitmap)
 
 class Folder(var name: String, val keys: MutableList<String>)
 
@@ -95,6 +91,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
+    private var dragBase = 0f
 
     private var pendingReturn = false
     private var returningFromApp = false
@@ -113,7 +110,11 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     private val userPresentReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            try { if (i.action == Intent.ACTION_USER_PRESENT) home.playIntro(fxIntro) } catch (e: Exception) { Log.e(TAG, "userPresent", e) }
+            try {
+                if (i.action == Intent.ACTION_USER_PRESENT) home.playIntro(fxIntro)
+            } catch (e: Exception) {
+                Log.e(TAG, "userPresent", e)
+            }
         }
     }
 
@@ -335,7 +336,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             }
             val out = File(filesDir, SNAP_FILE)
             Thread {
-                try { FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) } } catch (e: Exception) { Log.e(TAG, "snap", e) }
+                try { FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 90, it) } }
+                catch (e: Exception) { Log.e(TAG, "snap", e) }
             }.start()
         } catch (e: Exception) {
             Log.e(TAG, "captureSnapshot", e)
@@ -404,7 +406,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         ) { dp(it) }
 
         widgets = WidgetManager(this, home.widgetBox, prefs, HOST_ID, REQ_BIND, REQ_CONFIG, { dp(it) }) { remove ->
-            popup.show(center().first, center().second, "Widget", listOf("Remove widget" to remove))
+            val c = center()
+            popup.show(c.first, c.second, "Widget", listOf("Remove widget" to remove))
         }
 
         overlay = LaunchOverlay(this).apply {
@@ -431,10 +434,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             insets
         }
 
-        loadSettingsIcons()
-    }
-
-    private fun loadSettingsIcons() {
         applyIconStyle()
     }
 
@@ -548,8 +547,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         setLayers(true)
     }
 
-    private var dragBase = 0f
-
     override fun onDrag(dy: Float) {
         drawerView.setProgress((dragBase - dy / dist()).coerceIn(0f, 1f))
     }
@@ -577,7 +574,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             val base = -home.currentPage * home.pageWidth()
             var target = base + dx
             val minX = -(home.pageCount - 1) * home.pageWidth()
-            if (target > 0f) target = (target) * 0.3f
+            if (target > 0f) target *= 0.3f
             if (target < minX) target = minX + (target - minX) * 0.3f
             home.setPageOffset(target)
         } catch (e: Exception) {
@@ -680,17 +677,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
     }
 
-    override fun onPersist() {
-        persist()
-    }
+    override fun onPersist() = persist()
 
     override fun onToast(msg: String) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
-    override fun onFolderCreated(id: String) {
-        // Folder ban gaya; slots update ho chuke hain.
-    }
+    override fun onFolderCreated(id: String) {}
 
     override fun onRemoveFolder(id: String) {
         folders.remove(id)
@@ -700,7 +693,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         if (key.startsWith(FOLDER_PREFIX)) {
             val id = key.removePrefix(FOLDER_PREFIX)
             val f = folders[id] ?: return null
-            return AppItem(f.name, key, android.content.Intent(Intent.ACTION_MAIN), folderIcon(f))
+            return AppItem(f.name, key, Intent(Intent.ACTION_MAIN), folderIcon(f))
         }
         return allApps.firstOrNull { it.key == key }
     }
@@ -788,8 +781,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         persist()
         onPagesChanged()
     }
-
-    private fun applyStageBlurSafe(f: Float) = applyStageBlur(f)
 
     // ---------------- Popup menus ----------------
 
@@ -1108,13 +1099,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
     }
 
-    private fun applyStageBlurAlias(f: Float) = applyStageBlur(f)
-
     companion object {
         private const val HOST_ID = 1024
         private const val REQ_BIND = 11
         private const val REQ_CONFIG = 12
-        private const val MAX_PAGES_CAP = 10
         private const val POPUP_MS = 260L
     }
 }
