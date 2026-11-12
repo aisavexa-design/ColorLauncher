@@ -19,8 +19,8 @@ internal const val MODE_IGNORE = 5
 /**
  * Touch layer. Ek hi jagah gesture ka faisla hota hai.
  * - Long press (500ms) sirf tab, jab touch bilkul na hila ho aur list scroll na ho rahi ho.
+ * - Touch slop se zyada movement hote hi long-press timer turant cancel.
  * - Vertical drag (drawer kholna/band karna) aur horizontal page swipe.
- * - Scroll shuru hone par cancelLongTimer() bahar se call hota hai.
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -60,10 +60,10 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         }
     }
 
-    /** Scroll shuru hone par bahar se call hota hai. */
+    /** Scroll ya movement shuru hone par bahar se bhi call hota hai. */
     fun cancelLongTimer() {
         removeCallbacks(longRunnable)
-        if (mode == MODE_PENDING) moved = true
+        moved = true
     }
 
     override fun onDetachedFromWindow() {
@@ -151,6 +151,10 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
+        // Intercept par bhi movement check: slop cross hote hi long-press band
+        if (e.actionMasked == MotionEvent.ACTION_MOVE && mode == MODE_PENDING) {
+            if (abs(e.x - downX) > slop || abs(e.y - downY) > slop) cancelLongTimer()
+        }
         return mode == MODE_DRAG || mode == MODE_PAGE
     }
 
