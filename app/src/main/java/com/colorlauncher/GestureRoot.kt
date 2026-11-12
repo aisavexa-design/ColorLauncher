@@ -17,10 +17,10 @@ internal const val MODE_PAGE = 4
 internal const val MODE_IGNORE = 5
 
 /**
- * Touch layer. Ek hi jagah gesture ka faisla hota hai.
- * - Long press (500ms) sirf tab, jab touch bilkul na hila ho aur list scroll na ho rahi ho.
- * - Touch slop se zyada movement hote hi long-press timer turant cancel.
- * - Vertical drag (drawer kholna/band karna) aur horizontal page swipe.
+ * Touch layer.
+ * - Long press 700ms: sirf tab, jab touch bilkul na hila ho aur list scroll na ho rahi ho.
+ * - Movement slop se zyada hote hi long-press turant cancel.
+ * - Vertical drag (drawer) aur horizontal page swipe.
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -39,7 +39,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
     private val edgePx = 24 * ctx.resources.displayMetrics.density
-    private val longMs = 500L
+    private val longMs = 700L
     private var mode = MODE_NONE
     private var downX = 0f
     private var downY = 0f
@@ -92,12 +92,12 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
-                if (host.isBusy() || inEdge(e.x, e.y)) {
+                    if (host.isBusy() || inEdge(e.x, e.y)) {
                         mode = MODE_IGNORE
                     } else {
                         mode = MODE_PENDING
                         postDelayed(longRunnable, longMs)
-                                        }
+                    }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (mode == MODE_NONE || mode == MODE_IGNORE || mode == MODE_LONG) return
@@ -112,11 +112,13 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                         MODE_PENDING -> {
                             if (abs(dy) > slop && abs(dy) > abs(dx) * 1.5f && host.canStartDrag(dy)) {
                                 mode = MODE_DRAG
+                                removeCallbacks(longRunnable)
                                 host.onDragStart()
                                 host.onDrag(dy)
                                 parent?.requestDisallowInterceptTouchEvent(true)
                             } else if (abs(dx) > slop && abs(dx) > abs(dy) * 1.5f && host.canStartPageSwipe(dx)) {
                                 mode = MODE_PAGE
+                                removeCallbacks(longRunnable)
                                 host.onPageDrag(dx)
                                 parent?.requestDisallowInterceptTouchEvent(true)
                             }
@@ -151,7 +153,6 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
         track(e)
-        // Intercept par bhi movement check: slop cross hote hi long-press band
         if (e.actionMasked == MotionEvent.ACTION_MOVE && mode == MODE_PENDING) {
             if (abs(e.x - downX) > slop || abs(e.y - downY) > slop) cancelLongTimer()
         }
