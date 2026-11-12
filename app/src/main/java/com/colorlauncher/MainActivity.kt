@@ -610,12 +610,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun onLongPress(rawX: Float, rawY: Float) {
         try {
-            if (drawerView.progress > 0.5f) {
-                val item = drawerItemAt(rawX, rawY) ?: return
-                window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                showAppMenu(item, rawX, rawY)
-                return
-            }
+            if (drawerView.progress > 0.5f) return
             if (drawerView.progress > 0.01f) return
             if (home.isOnAnyItem(rawX, rawY)) {
                 home.pageGrids.getOrNull(home.currentPage)?.let { waveFrom(it, rawX, rawY) }
