@@ -10,7 +10,6 @@ import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -40,7 +39,6 @@ import kotlin.math.roundToInt
 private const val TAG = "CL"
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
-private const val PAGE_CELLS = 24
 private const val MAX_PAGES = 10
 private const val FOLDER_PREFIX = "folder:"
 private const val LAUNCH_RESET_MS = 4000L
@@ -93,6 +91,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var lastBottom = -1
     private var lastIme = -1
     private var dragBase = 0f
+    private var lastDrawerScrollAt = 0L
 
     private var pendingReturn = false
     private var returningFromApp = false
@@ -411,6 +410,19 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             { p -> onDrawerProgress(p) }
         )
 
+        // Scroll ke baad thodi der tak long-press band (fling ke baad popup na aaye)
+        drawerView.list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
+                lastDrawerScrollAt = System.currentTimeMillis()
+                if (newState != RecyclerView.SCROLL_STATE_IDLE) root.cancelLongTimer()
+            }
+
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                lastDrawerScrollAt = System.currentTimeMillis()
+                root.cancelLongTimer()
+            }
+        })
+
         if (FeatureFlags.isCategoryDrawer(this)) {
             val cat = CategoryDrawer(this, { v, i -> launch(v, i) }, { _, _, _ -> })
             drawerView.list.visibility = View.GONE
@@ -630,6 +642,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         if (drawerView.list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return false
         if (drawerView.list.isComputingLayout) return false
         if (home.isPageAnimating()) return false
+        // Scroll/fling ke baad 400ms tak long-press band
+        if (System.currentTimeMillis() - lastDrawerScrollAt < 400L) return false
         return true
     }
 
