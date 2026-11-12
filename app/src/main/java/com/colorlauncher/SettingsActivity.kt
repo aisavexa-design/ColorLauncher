@@ -178,7 +178,7 @@ class SettingsActivity : Activity() {
             setPadding(dp(8), dp(28), dp(8), dp(16))
         })
 
-                content.addView(sectionTitle("Drawer style"))
+        content.addView(sectionTitle("Drawer style"))
         content.addView(card().apply {
             addView(
                 chipRow(
@@ -226,6 +226,7 @@ class SettingsActivity : Activity() {
                 ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_CATEGORY, it).apply() }
             )
         })
+
         content.addView(sectionTitle("Animation"))
         content.addView(card().apply {
             addView(
@@ -290,8 +291,8 @@ class SettingsActivity : Activity() {
             addView(divider())
             addView(
                 chipRow(
-                    "Icon shape", "Clip style for home, dock and drawer icons",
-                    "icon_shape", listOf("Squircle", "Circle", "Square"), 0
+                    "Icon shape", "Default = squircle (jaisa pehle tha). Circle ya Square bhi chun sakte ho.",
+                    "icon_shape", listOf("Default", "Circle", "Square"), 0
                 )
             )
             addView(divider())
