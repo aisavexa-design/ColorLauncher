@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private lateinit var overlay: LaunchOverlay
     private lateinit var home: HomeScreen
     private lateinit var drawerView: DrawerView
+    private var categoryDrawer: CategoryDrawer? = null
     private lateinit var folderView: FolderView
     private lateinit var widgets: WidgetManager
     private lateinit var repo: AppRepository
@@ -92,7 +93,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var lastBottom = -1
     private var lastIme = -1
     private var dragBase = 0f
-    private var categoryDrawer: CategoryDrawer? = null
 
     private var pendingReturn = false
     private var returningFromApp = false
@@ -135,6 +135,12 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // First run: onboarding par bhejo
+        if (!getSharedPreferences("home", MODE_PRIVATE).getBoolean("first_run_done", false)) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
         try {
             setupWindow()
             enableHighRefresh()
@@ -170,12 +176,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun onStart() {
         super.onStart()
-        widgets.startListening()
+        if (::widgets.isInitialized) widgets.startListening()
     }
 
     override fun onResume() {
         super.onResume()
         try {
+            if (!::home.isInitialized) return
             val wasReturning = pendingReturn || returningFromApp
             returningFromApp = false
             if (pendingReturn) resetLaunch()
@@ -199,6 +206,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun onPause() {
         super.onPause()
         try {
+            if (!::home.isInitialized) return
             home.cancelPageAnim()
             folderView.close()
             popup.dismiss()
@@ -210,6 +218,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun onStop() {
         super.onStop()
         try {
+            if (!::home.isInitialized) return
             if (pendingReturn) returningFromApp = true else captureSnapshot()
             drawerView.cancelAnim()
             widgets.stopListening()
@@ -221,6 +230,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         try {
+            if (!::home.isInitialized) return
             outState.putInt("state_page", home.currentPage)
             outState.putString("state_folder", if (folderView.isOpen) folderView.openId else null)
         } catch (e: Exception) {
@@ -232,11 +242,11 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         super.onTrimMemory(level)
         try {
             if (level >= TRIM_MEMORY_RUNNING_LOW) {
-                repo.trim()
+                if (::repo.isInitialized) repo.trim()
                 folderIconCache = null
                 folderIconKey = ""
             }
-            if (level >= TRIM_MEMORY_UI_HIDDEN) sharedPool.clear()
+            if (level >= TRIM_MEMORY_UI_HIDDEN && ::sharedPool.isInitialized) sharedPool.clear()
         } catch (e: Exception) {
             Log.e(TAG, "trim", e)
         }
@@ -245,6 +255,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         try {
+            if (!::home.isInitialized) return
             if (pendingReturn) resetLaunch()
             if (folderView.isOpen) folderView.closeInstant()
             if (drawerView.searching) drawerView.setSearch(false, imm())
@@ -259,21 +270,23 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         try { unregisterReceiver(userPresentReceiver) } catch (_: Exception) {}
         try { unregisterReceiver(packageReceiver) } catch (_: Exception) {}
         try {
-            home.cancelPageAnim()
-            drawerView.cancelAnim()
+            if (::home.isInitialized) {
+                home.cancelPageAnim()
+                drawerView.cancelAnim()
+            }
             launchAnim?.cancel()
             closeAnimator?.cancel()
-            popup.dismiss()
+            if (::popup.isInitialized) popup.dismiss()
         } catch (e: Exception) {
             Log.e(TAG, "destroy", e)
         }
-        repo.shutdown()
-        sharedPool.clear()
+        if (::repo.isInitialized) repo.shutdown()
+        if (::sharedPool.isInitialized) sharedPool.clear()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        widgets.onActivityResult(requestCode, resultCode)
+        if (::widgets.isInitialized) widgets.onActivityResult(requestCode, resultCode)
     }
 
     @Suppress("DEPRECATION")
@@ -397,7 +410,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             { dp(it) },
             { p -> onDrawerProgress(p) }
         )
-                if (FeatureFlags.isCategoryDrawer(this)) {
+
+        if (FeatureFlags.isCategoryDrawer(this)) {
             val cat = CategoryDrawer(this, { v, i -> launch(v, i) }, { _, _, _ -> })
             drawerView.list.visibility = View.GONE
             drawerView.layer.addView(cat.view, 0, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -518,6 +532,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     // ---------------- Drawer progress ----------------
 
     private fun onDrawerProgress(p: Float) {
+        if (p < 0.001f) categoryDrawer?.showCategories()
         applyHomeBlur(p)
         val s = 1f - 0.06f * p
         home.layer.scaleX = s
@@ -526,7 +541,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         val hv = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
         if (home.layer.visibility != hv) home.layer.visibility = hv
         if (p < 0.001f && drawerView.searching) drawerView.setSearch(false, imm())
-        if (p < 0.001f) categoryDrawer?.showCategories()
     }
 
     private fun setProgress(p: Float) {
@@ -614,13 +628,19 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     override fun canLongPress(): Boolean {
         if (folderView.isOpen || pendingReturn || home.dragLock) return false
         if (drawerView.list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return false
+        if (drawerView.list.isComputingLayout) return false
         if (home.isPageAnimating()) return false
         return true
     }
 
     override fun onLongPress(rawX: Float, rawY: Float) {
         try {
-            if (drawerView.progress > 0.5f) return
+            if (drawerView.progress > 0.5f) {
+                val item = drawerItemAt(rawX, rawY) ?: return
+                window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showAppMenu(item, rawX, rawY)
+                return
+            }
             if (drawerView.progress > 0.01f) return
             if (home.isOnAnyItem(rawX, rawY)) {
                 home.pageGrids.getOrNull(home.currentPage)?.let { waveFrom(it, rawX, rawY) }
@@ -1026,7 +1046,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         drawerView.submitApps(apps)
         categoryDrawer?.submitApps(apps)
         onPagesChanged()
-        }
+    }
 
     private fun applyClock() {
         val on = prefs.getBoolean("clock", true)
