@@ -92,16 +92,11 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                     vt?.recycle()
                     vt = VelocityTracker.obtain()
                     vt?.addMovement(e)
-                    if (host.isBusy() || inEdge(e.x, e.y)) {
+                if (host.isBusy() || inEdge(e.x, e.y)) {
                         mode = MODE_IGNORE
                     } else {
                         mode = MODE_PENDING
-                        // Drawer khula ho to long-press nahi (wahan scroll hota hai)
-                        if (!host.canLongPress()) {
-                            // timer start nahi
-                        } else {
-                            postDelayed(longRunnable, longMs)
-                        }
+                        postDelayed(longRunnable, longMs)
                                         }
                 }
                 MotionEvent.ACTION_MOVE -> {
