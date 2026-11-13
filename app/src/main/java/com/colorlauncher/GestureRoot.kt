@@ -21,6 +21,7 @@ internal const val MODE_IGNORE = 5
  * - Long press 700ms: sirf tab, jab touch bilkul na hila ho aur list scroll na ho rahi ho.
  * - Movement slop se zyada hote hi long-press turant cancel.
  * - Vertical drag (drawer) aur horizontal page swipe.
+ * - Home par neeche ki taraf swipe (ACTION_UP par) -> onSearchSwipe().
  */
 class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
 
@@ -35,6 +36,7 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
         fun isBusy(): Boolean
         fun canLongPress(): Boolean
         fun onLongPress(rawX: Float, rawY: Float)
+        fun onSearchSwipe()
     }
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
@@ -130,6 +132,12 @@ class GestureRoot(ctx: Context, private val host: Host) : FrameLayout(ctx) {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     removeCallbacks(longRunnable)
                     val cancel = e.actionMasked == MotionEvent.ACTION_CANCEL
+                    // Home par neeche swipe: search bar
+                    if (mode == MODE_PENDING && !cancel &&
+                        (e.y - downY) > slop * 3 && abs(e.y - downY) > abs(e.x - downX) * 1.5f
+                    ) {
+                        host.onSearchSwipe()
+                    }
                     if (mode == MODE_DRAG) {
                         vt?.addMovement(e)
                         vt?.computeCurrentVelocity(1000)
