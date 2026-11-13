@@ -22,12 +22,11 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import kotlin.math.abs
 
 /**
  * Home par niche swipe se khulne wala search panel (upar se aata hai).
- * - Panel ka top status bar ke neeche se shuru hota hai (setTopInset).
- * - Upar swipe karne par band hota hai, khali jagah tap par bhi band.
+ * - Upar swipe karke band hota hai (animation ke saath), khali jagah tap par bhi band.
+ * - Drag ke dauran panel aur home fade dono progress ke saath badalte hain.
  * - Keyboard turant khulta hai.
  */
 class SearchBar(
@@ -37,8 +36,7 @@ class SearchBar(
     private val onProgress: (Float) -> Unit
 ) {
 
-    /** Touch handle karne wala root: upar swipe aur khali jagah tap ko pakadta hai. */
-       inner class Root(c: Context) : FrameLayout(c) {
+    inner class Root(c: Context) : FrameLayout(c) {
         private val slop = ViewConfiguration.get(c).scaledTouchSlop
         private var downY = 0f
         private var dragging = false
@@ -50,7 +48,7 @@ class SearchBar(
                     dragging = false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (downY - e.y > slop && shown) {
+                    if (shown && downY - e.y > slop) {
                         dragging = true
                         return true
                     }
@@ -70,14 +68,18 @@ class SearchBar(
                     val dy = e.y - downY
                     if (!dragging && dy < -slop) dragging = true
                     if (dragging) {
-                        sheet.translationY = dy.coerceAtMost(0f)
+                        val up = (-dy).coerceAtLeast(0f)
+                        val h = sheet.height.takeIf { it > 0 } ?: dp(400)
+                        val p = (1f - up / h).coerceIn(0f, 1f)
+                        setProgress(p)
                     }
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
                     if (dragging) {
-                        val dy = e.y - downY
-                        if (dy < -sheet.height * 0.25f) hide() else snapBack()
+                        val up = -(e.y - downY)
+                        val h = sheet.height.takeIf { it > 0 } ?: dp(400)
+                        if (up > h * 0.25f) hide() else animateTo(1f)
                     } else {
                         hide()
                     }
@@ -85,7 +87,7 @@ class SearchBar(
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) snapBack()
+                    if (dragging) animateTo(1f)
                     dragging = false
                     return true
                 }
@@ -110,6 +112,7 @@ class SearchBar(
     private var source: List<AppItem> = emptyList()
     private var shown = false
     private var progress = 0f
+    private var anim: ValueAnimator? = null
 
     init {
         sheet = LinearLayout(ctx).apply {
@@ -130,7 +133,7 @@ class SearchBar(
                 setColor(0x33FFFFFF)
             }
             setPadding(dp(16), dp(12), dp(16), dp(12))
-            addTextChangedListener(object : TextWatcher {
+            addTextChangedListener(object : android.text.TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { refresh(s?.toString() ?: "") }
                 override fun afterTextChanged(s: Editable?) {}
@@ -211,7 +214,7 @@ class SearchBar(
         onLaunch(suggestIcons[i], item)
     }
 
-    /** Swipe progress (0..1): home fade ke saath panel upar se utarta hai. */
+    /** Progress (0..1): 0 = band, 1 = poora khula. Panel upar se utarta hai, home fade hota hai. */
     fun setProgress(p: Float) {
         progress = p.coerceIn(0f, 1f)
         layer.visibility = if (progress > 0f) View.VISIBLE else View.GONE
@@ -221,15 +224,15 @@ class SearchBar(
         onProgress(progress)
     }
 
-    /** Panel poora khulta hai, keyboard turant khulta hai. */
+    /** Panel khulta hai, keyboard turant khulta hai. */
     fun show() {
         if (shown) return
         shown = true
         layer.visibility = View.VISIBLE
-        animateTo(1f)
         input.requestFocus()
         val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        animateTo(1f)
         for (idx in 0 until suggestRow.childCount) {
             val col = suggestRow.getChildAt(idx)
             col.alpha = 0f
@@ -239,7 +242,7 @@ class SearchBar(
         }
     }
 
-    /** Animation ke saath band, keyboard bhi band. */
+    /** Upar ki taraf animation ke saath band, keyboard bhi band. */
     fun hide() {
         if (!shown && progress == 0f) return
         shown = false
@@ -249,23 +252,19 @@ class SearchBar(
         animateTo(0f) {
             input.setText("")
             layer.visibility = View.GONE
-            sheet.translationY = 0f
         }
     }
 
-    /** Drag ke baad panel wapas khula state par. */
-    private fun snapBack() {
-        sheet.animate().translationY(0f).setDuration(200).setInterpolator(emphasized).start()
-    }
-
     private fun animateTo(target: Float, end: (() -> Unit)? = null) {
+        anim?.cancel()
         val a = ValueAnimator.ofFloat(progress, target)
-        a.duration = if (target > 0f) 320L else 240L
+        a.duration = if (target > 0f) 320L else 260L
         a.interpolator = emphasized
         a.addUpdateListener { setProgress(it.animatedValue as Float) }
         a.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) { end?.invoke() }
         })
+        anim = a
         a.start()
     }
 
