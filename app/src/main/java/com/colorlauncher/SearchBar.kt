@@ -9,7 +9,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
-import android.view.animation.OvershootInterpolator
+import android.view.animation.PathInterpolator
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -17,17 +18,18 @@ import android.widget.LinearLayout
 import android.widget.TextView
 
 /**
- * Home par niche se aane wala search bar. Neeche se slide hota hai, 4 suggestion icons dikhata hai.
- * onSearch(query) se filter, onLaunch(item) se app khulta hai.
+ * Home par niche swipe se search panel. Panel UPAR se aata hai.
+ * setProgress(p) se swipe ke saath home fade hota hai, aur keyboard turant khulta hai.
  */
 class SearchBar(
     private val ctx: Context,
     private val dp: (Int) -> Int,
-    private val onLaunch: (View, AppItem) -> Unit
+    private val onLaunch: (View, AppItem) -> Unit,
+    private val onProgress: (Float) -> Unit
 ) {
     val layer: FrameLayout = FrameLayout(ctx).apply {
         visibility = View.GONE
-        setBackgroundColor(0x99000000.toInt())
+        setBackgroundColor(Color.TRANSPARENT)
         isClickable = true
     }
 
@@ -36,15 +38,17 @@ class SearchBar(
     private val suggestRow: LinearLayout
     private val suggestIcons = mutableListOf<ImageView>()
     private val suggestLabels = mutableListOf<TextView>()
+    private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
 
     private var source: List<AppItem> = emptyList()
     private var shown = false
+    private var progress = 0f
 
     init {
         sheet = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(24))
-            background = GlassBackground.make(ctx, 28f)
+            setPadding(dp(16), dp(56), dp(16), dp(20))
+            background = GlassBackground.make(ctx, 32f)
         }
 
         input = EditText(ctx).apply {
@@ -53,6 +57,7 @@ class SearchBar(
             setTextColor(Color.WHITE)
             textSize = 18f
             setSingleLine(true)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
             background = GradientDrawable().apply {
                 cornerRadius = dp(18).toFloat()
                 setColor(0x33FFFFFF)
@@ -76,9 +81,7 @@ class SearchBar(
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
             }
-            val icon = ImageView(ctx).apply {
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            }
+            val icon = ImageView(ctx).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
             val label = TextView(ctx).apply {
                 setTextColor(Color.WHITE)
                 textSize = 11f
@@ -95,18 +98,17 @@ class SearchBar(
         }
         sheet.addView(suggestRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        layer.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        // Sheet upar se aata hai (Gravity.TOP)
+        layer.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
         layer.setOnClickListener { hide() }
         sheet.setOnClickListener { }
     }
 
-    /** Apps list dene par suggestions update honge. */
     fun submitApps(apps: List<AppItem>) {
         source = apps
         refresh(input.text?.toString() ?: "")
     }
 
-    /** Pehle se 4 suggestions: query khali ho to top 4 apps, warna matching apps. */
     private fun refresh(q: String) {
         val list = if (q.isBlank()) source else source.filter { it.label.contains(q, ignoreCase = true) }
         val top = list.take(4)
@@ -114,12 +116,13 @@ class SearchBar(
             val item = top.getOrNull(i)
             val icon = suggestIcons[i]
             val label = suggestLabels[i]
+            val col = icon.parent as View
             if (item == null) {
                 icon.setImageDrawable(null)
                 label.text = ""
-                icon.parent?.let { (it as View).visibility = View.INVISIBLE }
+                col.visibility = View.INVISIBLE
             } else {
-                (icon.parent as View).visibility = View.VISIBLE
+                col.visibility = View.VISIBLE
                 icon.setImageBitmap(item.icon)
                 label.text = item.label
             }
@@ -134,35 +137,61 @@ class SearchBar(
         onLaunch(suggestIcons[i], item)
     }
 
-    /** Neeche se slide-up animation ke saath dikhao. */
+    /**
+     * Swipe progress (0..1). 0 = home normal, 1 = search poora khula.
+     * Home ko fade karta hai aur panel upar se slide karta hai.
+     */
+    fun setProgress(p: Float) {
+        progress = p.coerceIn(0f, 1f)
+        layer.visibility = if (progress > 0f) View.VISIBLE else View.GONE
+        layer.alpha = progress
+        val h = sheet.height.takeIf { it > 0 } ?: dp(400)
+        sheet.translationY = -(1f - progress) * h
+        onProgress(progress)
+    }
+
+    /** Swipe complete ya fling par poora khulna. Keyboard turant khulta hai. */
     fun show() {
         if (shown) return
         shown = true
         layer.visibility = View.VISIBLE
-        layer.alpha = 0f
-        layer.animate().alpha(1f).setDuration(200).start()
-        sheet.translationY = dp(400).toFloat()
-        sheet.animate().translationY(0f).setDuration(360)
-            .setInterpolator(OvershootInterpolator(0.9f)).start()
-        // Icons ek-ek karke rubber pop-in
-        for ((idx, col) in suggestRow.let { r -> (0 until r.childCount).map { r.getChildAt(it) } }.withIndex()) {
+        animateTo(1f)
+        input.requestFocus()
+        val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        val row = suggestRow
+        for (idx in 0 until row.childCount) {
+            val col = row.getChildAt(idx)
             col.alpha = 0f
-            col.translationY = dp(30).toFloat()
-            col.animate().alpha(1f).translationY(0f).setStartDelay(120L + idx * 60L)
-                .setDuration(320).setInterpolator(DecelerateInterpolator()).start()
+            col.translationY = dp(24).toFloat()
+            col.animate().alpha(1f).translationY(0f).setStartDelay(120L + idx * 50L)
+                .setDuration(300).setInterpolator(DecelerateInterpolator()).start()
         }
     }
 
-    /** Animation ke saath band karo. */
+    /** Animation ke saath band, keyboard bhi band. */
     fun hide() {
-        if (!shown) return
+        if (!shown && progress == 0f) return
         shown = false
-        layer.animate().alpha(0f).setDuration(160).withEndAction {
-            layer.visibility = View.GONE
+        val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(input.windowToken, 0)
+        input.clearFocus()
+        animateTo(0f) {
             input.setText("")
-            input.clearFocus()
-        }.start()
-        sheet.animate().translationY(dp(400).toFloat()).setDuration(220).start()
+            layer.visibility = View.GONE
+        }
+    }
+
+    private fun animateTo(target: Float, end: (() -> Unit)? = null) {
+        val start = progress
+        val a = android.animation.ValueAnimator.ofFloat(start, target)
+        a.duration = if (target > 0f) 320L else 240L
+        a.interpolator = emphasized
+        a.addUpdateListener { setProgress(it.animatedValue as Float) }
+        a.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) { end?.invoke() }
+        })
+        a.start()
     }
 
     fun isShown(): Boolean = shown
