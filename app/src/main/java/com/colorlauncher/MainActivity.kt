@@ -53,11 +53,11 @@ data class IconStyle(val sizeDp: Int, val shape: Int, val labels: Boolean, val g
 fun readIconStyle(ctx: Context): IconStyle {
     val p = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     return IconStyle(
-        p.getInt("icon_size", 60),
+        p.getInt("icon_size", 63),
         p.getInt("icon_shape", 0),
-        p.getBoolean("icon_label", true),
-        p.getInt("gap_h", 8),
-        p.getInt("gap_v", 12)
+        p.getBoolean("icon_label", false),
+        p.getInt("gap_h", 6),
+        p.getInt("gap_v", 0)
     )
 }
 
