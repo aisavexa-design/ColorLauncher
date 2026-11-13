@@ -194,7 +194,7 @@ class SettingsActivity : Activity() {
                 switchRow(
                     "Liquid glass",
                     "Dock, folder, drawer aur categories par glass effect. Low RAM par simple rahega.",
-                    prefs.getBoolean(FeatureFlags.KEY_GLASS_MASTER, false)
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_MASTER, true)
                 ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_MASTER, it).apply() }
             )
             addView(divider())
@@ -208,21 +208,21 @@ class SettingsActivity : Activity() {
             addView(
                 switchRow(
                     "Folder glass", "Folder card ka glass background",
-                    prefs.getBoolean(FeatureFlags.KEY_GLASS_FOLDER, true)
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_FOLDER, false)
                 ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_FOLDER, it).apply() }
             )
             addView(divider())
             addView(
                 switchRow(
                     "Drawer glass", "App drawer ka glass background",
-                    prefs.getBoolean(FeatureFlags.KEY_GLASS_DRAWER, true)
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_DRAWER, false)
                 ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_DRAWER, it).apply() }
             )
             addView(divider())
             addView(
                 switchRow(
                     "Category glass", "Category cards ka glass background",
-                    prefs.getBoolean(FeatureFlags.KEY_GLASS_CATEGORY, true)
+                    prefs.getBoolean(FeatureFlags.KEY_GLASS_CATEGORY, false)
                 ) { prefs.edit().putBoolean(FeatureFlags.KEY_GLASS_CATEGORY, it).apply() }
             )
         })
@@ -247,7 +247,7 @@ class SettingsActivity : Activity() {
             addView(divider())
             addView(
                 sliderRow(
-                    "App open speed", 150, 600, prefs.getInt("anim_ms", 300), "ms",
+                    "App open speed", 150, 600, prefs.getInt("anim_ms", 497), "ms",
                     "Lower value = faster animation"
                 ) { prefs.edit().putInt("anim_ms", it).apply() }
             )
@@ -256,7 +256,7 @@ class SettingsActivity : Activity() {
                 switchRow(
                     "Unlock animation",
                     "Icons glide into place when the phone is unlocked.",
-                    prefs.getBoolean("fx_intro", true)
+                    prefs.getBoolean("fx_intro", false)
                 ) { prefs.edit().putBoolean("fx_intro", it).apply() }
             )
         })
@@ -267,7 +267,7 @@ class SettingsActivity : Activity() {
                 switchRow(
                     "Background blur",
                     "Blurs the home screen when the app drawer or a folder opens.",
-                    prefs.getBoolean("fx_blur", true)
+                    prefs.getBoolean("fx_blur", false)
                 ) { prefs.edit().putBoolean("fx_blur", it).apply() }
             )
             addView(divider())
@@ -275,7 +275,7 @@ class SettingsActivity : Activity() {
                 switchRow(
                     "Icon blur",
                     "Blurs only the icons while an app opens or closes (Android 12+).",
-                    prefs.getBoolean("icon_blur", true)
+                    prefs.getBoolean("icon_blur", false)
                 ) { prefs.edit().putBoolean("icon_blur", it).apply() }
             )
         })
@@ -284,7 +284,7 @@ class SettingsActivity : Activity() {
         content.addView(card().apply {
             addView(
                 sliderRow(
-                    "Icon size", 40, 80, prefs.getInt("icon_size", 60), "dp",
+                    "Icon size", 40, 80, prefs.getInt("icon_size", 63), "dp",
                     "Home and app drawer icons", 1
                 ) { prefs.edit().putInt("icon_size", it).apply() }
             )
@@ -300,7 +300,7 @@ class SettingsActivity : Activity() {
                 switchRow(
                     "Icon labels",
                     "Show app names under icons",
-                    prefs.getBoolean("icon_label", true)
+                    prefs.getBoolean("icon_label", false)
                 ) { prefs.edit().putBoolean("icon_label", it).apply() }
             )
         })
@@ -331,14 +331,14 @@ class SettingsActivity : Activity() {
         content.addView(card().apply {
             addView(
                 sliderRow(
-                    "Horizontal gap", 0, 40, prefs.getInt("gap_h", 8), "dp",
+                    "Horizontal gap", 0, 40, prefs.getInt("gap_h", 6), "dp",
                     "Space between icons left and right", 1
                 ) { prefs.edit().putInt("gap_h", it).apply() }
             )
             addView(divider())
             addView(
                 sliderRow(
-                    "Vertical gap", 0, 40, prefs.getInt("gap_v", 12), "dp",
+                    "Vertical gap", 0, 40, prefs.getInt("gap_v", 0), "dp",
                     "Space between icon rows", 1
                 ) { prefs.edit().putInt("gap_v", it).apply() }
             )
