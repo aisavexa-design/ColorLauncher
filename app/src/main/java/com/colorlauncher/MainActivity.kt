@@ -430,7 +430,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             categoryDrawer = cat
         }
         if (FeatureFlags.glassOn(this, FeatureFlags.KEY_GLASS_DRAWER)) {
-            drawerView.layer.background = GlassBackground.make(this, 0f)
+           drawerView.layer.background = GlassBackground.drawerScreen(this)
         }
 
         folderView = FolderView(
