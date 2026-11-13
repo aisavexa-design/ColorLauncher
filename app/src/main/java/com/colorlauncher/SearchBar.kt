@@ -1,25 +1,34 @@
 package com.colorlauncher
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.PathInterpolator
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import kotlin.math.abs
 
 /**
- * Home par niche swipe se search panel. Panel UPAR se aata hai.
- * setProgress(p) se swipe ke saath home fade hota hai, aur keyboard turant khulta hai.
+ * Home par niche swipe se khulne wala search panel (upar se aata hai).
+ * - Panel ka top status bar ke neeche se shuru hota hai (setTopInset).
+ * - Upar swipe karne par band hota hai, khali jagah tap par bhi band.
+ * - Keyboard turant khulta hai.
  */
 class SearchBar(
     private val ctx: Context,
@@ -27,7 +36,65 @@ class SearchBar(
     private val onLaunch: (View, AppItem) -> Unit,
     private val onProgress: (Float) -> Unit
 ) {
-    val layer: FrameLayout = FrameLayout(ctx).apply {
+
+    /** Touch handle karne wala root: upar swipe aur khali jagah tap ko pakadta hai. */
+    private inner class Root(c: Context) : FrameLayout(c) {
+        private val slop = ViewConfiguration.get(c).scaledTouchSlop
+        private var downY = 0f
+        private var dragging = false
+
+        override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = e.y
+                    dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (downY - e.y > slop && shown) {
+                        dragging = true
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = e.y
+                    dragging = false
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = e.y - downY
+                    if (!dragging && dy < -slop) dragging = true
+                    if (dragging) {
+                        sheet.translationY = dy.coerceAtMost(0f)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragging) {
+                        val dy = e.y - downY
+                        if (dy < -sheet.height * 0.25f) hide() else snapBack()
+                    } else {
+                        hide()
+                    }
+                    dragging = false
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) snapBack()
+                    dragging = false
+                    return true
+                }
+            }
+            return true
+        }
+    }
+
+    val layer: Root = Root(ctx).apply {
         visibility = View.GONE
         setBackgroundColor(Color.TRANSPARENT)
         isClickable = true
@@ -47,7 +114,7 @@ class SearchBar(
     init {
         sheet = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(56), dp(16), dp(20))
+            setPadding(dp(16), dp(16), dp(16), dp(20))
             background = GlassBackground.make(ctx, 32f)
         }
 
@@ -57,7 +124,7 @@ class SearchBar(
             setTextColor(Color.WHITE)
             textSize = 18f
             setSingleLine(true)
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
             background = GradientDrawable().apply {
                 cornerRadius = dp(18).toFloat()
                 setColor(0x33FFFFFF)
@@ -98,10 +165,17 @@ class SearchBar(
         }
         sheet.addView(suggestRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        // Sheet upar se aata hai (Gravity.TOP)
         layer.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
-        layer.setOnClickListener { hide() }
         sheet.setOnClickListener { }
+    }
+
+    /** Status bar ki height (px). Panel ka top yahin se shuru hoga. */
+    fun setTopInset(px: Int) {
+        val lp = sheet.layoutParams as FrameLayout.LayoutParams
+        if (lp.topMargin != px) {
+            lp.topMargin = px
+            sheet.layoutParams = lp
+        }
     }
 
     fun submitApps(apps: List<AppItem>) {
@@ -137,10 +211,7 @@ class SearchBar(
         onLaunch(suggestIcons[i], item)
     }
 
-    /**
-     * Swipe progress (0..1). 0 = home normal, 1 = search poora khula.
-     * Home ko fade karta hai aur panel upar se slide karta hai.
-     */
+    /** Swipe progress (0..1): home fade ke saath panel upar se utarta hai. */
     fun setProgress(p: Float) {
         progress = p.coerceIn(0f, 1f)
         layer.visibility = if (progress > 0f) View.VISIBLE else View.GONE
@@ -150,7 +221,7 @@ class SearchBar(
         onProgress(progress)
     }
 
-    /** Swipe complete ya fling par poora khulna. Keyboard turant khulta hai. */
+    /** Panel poora khulta hai, keyboard turant khulta hai. */
     fun show() {
         if (shown) return
         shown = true
@@ -159,9 +230,8 @@ class SearchBar(
         input.requestFocus()
         val imm = ctx.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-        val row = suggestRow
-        for (idx in 0 until row.childCount) {
-            val col = row.getChildAt(idx)
+        for (idx in 0 until suggestRow.childCount) {
+            val col = suggestRow.getChildAt(idx)
             col.alpha = 0f
             col.translationY = dp(24).toFloat()
             col.animate().alpha(1f).translationY(0f).setStartDelay(120L + idx * 50L)
@@ -179,17 +249,22 @@ class SearchBar(
         animateTo(0f) {
             input.setText("")
             layer.visibility = View.GONE
+            sheet.translationY = 0f
         }
     }
 
+    /** Drag ke baad panel wapas khula state par. */
+    private fun snapBack() {
+        sheet.animate().translationY(0f).setDuration(200).setInterpolator(emphasized).start()
+    }
+
     private fun animateTo(target: Float, end: (() -> Unit)? = null) {
-        val start = progress
-        val a = android.animation.ValueAnimator.ofFloat(start, target)
+        val a = ValueAnimator.ofFloat(progress, target)
         a.duration = if (target > 0f) 320L else 240L
         a.interpolator = emphasized
         a.addUpdateListener { setProgress(it.animatedValue as Float) }
-        a.addListener(object : android.animation.AnimatorListenerAdapter() {
-            override fun onAnimationEnd(animation: android.animation.Animator) { end?.invoke() }
+        a.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) { end?.invoke() }
         })
         a.start()
     }
