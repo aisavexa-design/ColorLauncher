@@ -1,8 +1,8 @@
 package com.colorlauncher
 
-import android.animation.ValueAnimator
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.ActivityOptions
 import android.app.admin.DevicePolicyManager
 import android.appwidget.AppWidgetProviderInfo
@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private lateinit var repo: AppRepository
     private lateinit var popup: PopupMenu
     private lateinit var sharedPool: RecyclerView.RecycledViewPool
+    private lateinit var searchBar: SearchBar
 
     private val folders = LinkedHashMap<String, Folder>()
     private var allApps: List<AppItem> = emptyList()
@@ -270,6 +271,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             if (pendingReturn) resetLaunch()
             if (folderView.isOpen) folderView.closeInstant()
             if (drawerView.searching) drawerView.setSearch(false, imm())
+            if (::searchBar.isInitialized && searchBar.isShown()) searchBar.hide()
             if (drawerView.progress > 0.01f) animateDrawer(0f, 0f)
         } catch (e: Exception) {
             Log.e(TAG, "newIntent", e)
@@ -308,6 +310,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private fun handleBack() {
         try {
             when {
+                ::searchBar.isInitialized && searchBar.isShown() -> searchBar.hide()
                 folderView.isOpen -> folderView.close()
                 pendingReturn -> resetLaunch()
                 drawerView.searching -> drawerView.setSearch(false, imm())
@@ -473,6 +476,9 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         root.addView(stage, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(folderView.layer, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        searchBar = SearchBar(this, { dp(it) }) { v, i -> launch(v, i) }
+        root.addView(searchBar.layer, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // Home par double tap: screen lock (Device Admin permission ke baad)
         val doubleTap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -694,6 +700,11 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         } catch (e: Exception) {
             Log.e(TAG, "longPress", e)
         }
+    }
+
+    override fun onSearchSwipe() {
+        if (home.dragLock || folderView.isOpen || drawerView.progress > 0.01f || pendingReturn) return
+        if (::searchBar.isInitialized) searchBar.show()
     }
 
     private fun drawerItemAt(rawX: Float, rawY: Float): AppItem? {
@@ -940,6 +951,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             }
             if (pendingReturn) return
             if (drawerView.searching) drawerView.setSearch(false, imm())
+            if (::searchBar.isInitialized && searchBar.isShown()) searchBar.hide()
             popup.dismiss()
 
             val loc = IntArray(2)
@@ -1086,6 +1098,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         allApps = apps
         drawerView.submitApps(apps)
         categoryDrawer?.submitApps(apps)
+        if (::searchBar.isInitialized) searchBar.submitApps(apps)
         onPagesChanged()
     }
 
