@@ -226,7 +226,7 @@ class HomeScreen(
             pageAdapters.clear()
             pageGuides.clear()
             for (p in 0 until pageCount) {
-                val adapter = AppAdapter(true, { v, i -> onLaunch(v, i) }, null)
+                val adapter = AppAdapter(false, { v, i -> onLaunch(v, i) }, null)
                 val guide = GridGuide()
                 val grid = RecyclerView(ctx).apply {
                     layoutManager = GridLayoutManager(ctx, HS_COLS)
