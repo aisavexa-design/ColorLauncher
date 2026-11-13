@@ -477,7 +477,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         root.addView(folderView.layer, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        searchBar = SearchBar(this, { dp(it) }) { v, i -> launch(v, i) }
+        searchBar = SearchBar(this, { dp(it) }, { v, i -> launch(v, i) }) { p ->
+    home.layer.alpha = 1f - p
+    home.layer.visibility = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+        }
         root.addView(searchBar.layer, FrameLayout.LayoutParams(MATCH, MATCH))
 
         // Home par double tap: screen lock (Device Admin permission ke baad)
