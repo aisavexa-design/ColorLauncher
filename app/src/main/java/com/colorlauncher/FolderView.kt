@@ -64,7 +64,7 @@ class FolderView(
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
-        adapter = AppAdapter(true, { v, i -> onLaunch(v, i) }, { onAppLongPress(it) })
+        adapter = AppAdapter(false, { v, i -> onLaunch(v, i) }, { onAppLongPress(it) })
         grid = RecyclerView(ctx).apply {
             layoutManager = GridLayoutManager(ctx, 3)
             this.adapter = this@FolderView.adapter
