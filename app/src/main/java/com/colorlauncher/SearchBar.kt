@@ -38,7 +38,7 @@ class SearchBar(
 ) {
 
     /** Touch handle karne wala root: upar swipe aur khali jagah tap ko pakadta hai. */
-    private inner class Root(c: Context) : FrameLayout(c) {
+       inner class Root(c: Context) : FrameLayout(c) {
         private val slop = ViewConfiguration.get(c).scaledTouchSlop
         private var downY = 0f
         private var dragging = false
