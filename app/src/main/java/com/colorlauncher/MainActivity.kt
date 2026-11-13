@@ -1,24 +1,37 @@
 package com.colorlauncher
 
 import android.animation.ValueAnimator
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.app.ActivityOptions
+import android.app.admin.DevicePolicyManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.GestureDetector
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.view.animation.PathInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -80,13 +93,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var appsLoaded = false
     private var loadedPack = ""
 
-    private var fxBlur = true
-    private var iconBlurOn = true
-    private var fxIntro = true
+    private var fxBlur = false
+    private var iconBlurOn = false
+    private var fxIntro = false
     private var pageAnim = true
     private var customAnim = true
     private var closeAnimOn = true
-    private var animMs = 300L
+    private var animMs = 497L
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
@@ -134,7 +147,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // First run: onboarding par bhejo
         if (!getSharedPreferences("home", MODE_PRIVATE).getBoolean("first_run_done", false)) {
             startActivity(Intent(this, OnboardingActivity::class.java))
             finish()
@@ -312,13 +324,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     private fun loadSettings() {
         val s = getSharedPreferences("settings", MODE_PRIVATE)
-        fxBlur = s.getBoolean("fx_blur", true)
-        iconBlurOn = s.getBoolean("icon_blur", true)
-        fxIntro = s.getBoolean("fx_intro", true)
+        fxBlur = s.getBoolean("fx_blur", false)
+        iconBlurOn = s.getBoolean("icon_blur", false)
+        fxIntro = s.getBoolean("fx_intro", false)
         pageAnim = s.getBoolean("page_anim", true)
         customAnim = s.getBoolean("custom_anim", true)
         closeAnimOn = s.getBoolean("close_anim", true)
-        animMs = s.getInt("anim_ms", 300).toLong()
+        animMs = s.getInt("anim_ms", 497).toLong()
     }
 
     // ---------------- Snapshot ----------------
@@ -330,7 +342,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             if (w <= 0 || h <= 0) return
             val s = 0.5f
             val bmp = Bitmap.createBitmap((w * s).toInt(), (h * s).toInt(), Bitmap.Config.RGB_565)
-            val c = android.graphics.Canvas(bmp)
+            val c = Canvas(bmp)
             c.scale(s, s)
             val ov = overlay.visibility
             val ss = stage.scaleX
@@ -410,7 +422,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             { p -> onDrawerProgress(p) }
         )
 
-        // Scroll ke baad thodi der tak long-press band (fling ke baad popup na aaye)
         drawerView.list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
                 lastDrawerScrollAt = System.currentTimeMillis()
@@ -430,7 +441,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             categoryDrawer = cat
         }
         if (FeatureFlags.glassOn(this, FeatureFlags.KEY_GLASS_DRAWER)) {
-           drawerView.layer.background = GlassBackground.drawerScreen(this)
+            drawerView.layer.background = GlassBackground.drawerScreen(this)
         }
 
         folderView = FolderView(
@@ -463,6 +474,17 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         root.addView(folderView.layer, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
 
+        // Home par double tap: screen lock (Device Admin permission ke baad)
+        val doubleTap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (drawerView.progress < 0.01f && !folderView.isOpen) {
+                    if (!LockAdmin.lockNow(this@MainActivity)) requestLockAdmin()
+                }
+                return true
+            }
+        })
+        home.layer.setOnTouchListener { _, e -> doubleTap.onTouchEvent(e); false }
+
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -471,6 +493,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
 
         applyIconStyle()
+    }
+
+    private fun requestLockAdmin() {
+        val i = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+        i.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, LockAdmin.component(this))
+        i.putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Double tap se screen lock karne ke liye.")
+        startActivity(i)
     }
 
     private fun center(): Pair<Float, Float> =
@@ -511,9 +540,9 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     // ---------------- Blur ----------------
 
-    private fun blurFx(radius: Float): android.graphics.RenderEffect? =
+    private fun blurFx(radius: Float): RenderEffect? =
         if (radius < 0.5f || Build.VERSION.SDK_INT < 31) null
-        else android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP)
+        else RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
 
     private fun applyHomeBlur(p: Float) {
         if (Build.VERSION.SDK_INT < 31) return
@@ -642,7 +671,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         if (drawerView.list.scrollState != RecyclerView.SCROLL_STATE_IDLE) return false
         if (drawerView.list.isComputingLayout) return false
         if (home.isPageAnimating()) return false
-        // Scroll/fling ke baad 400ms tak long-press band
         if (System.currentTimeMillis() - lastDrawerScrollAt < 400L) return false
         return true
     }
@@ -696,10 +724,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
                 val delay = (d * 0.35f).toLong().coerceAtMost(420L)
                 v.animate().cancel()
                 v.animate().scaleX(0.9f).scaleY(0.9f).setStartDelay(delay).setDuration(120)
-                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .setInterpolator(DecelerateInterpolator())
                     .withEndAction {
                         v.animate().scaleX(1f).scaleY(1f).setDuration(320)
-                            .setInterpolator(android.view.animation.OvershootInterpolator(2f)).start()
+                            .setInterpolator(OvershootInterpolator(2f)).start()
                     }.start()
             }
         } catch (e: Exception) {
@@ -765,18 +793,17 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private fun makeFolderIcon(items: List<AppItem>): Bitmap {
         val size = dp(96)
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val c = android.graphics.Canvas(bmp)
+        val c = Canvas(bmp)
         try {
-            c.drawRect(android.graphics.RectF(0f, 0f, size.toFloat(), size.toFloat()),
-                android.graphics.Paint().apply { color = 0xCC2A2A30.toInt() })
+            c.drawRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), Paint().apply { color = 0xCC2A2A30.toInt() })
             val pad = size * 0.12f
             val gap = size * 0.06f
             val mini = (size - 2 * pad - gap) / 2f
-            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
             items.take(4).forEachIndexed { i, item ->
                 val x = pad + (i % 2) * (mini + gap)
                 val y = pad + (i / 2) * (mini + gap)
-                c.drawBitmap(item.icon, null, android.graphics.RectF(x, y, x + mini, y + mini), p)
+                c.drawBitmap(item.icon, null, RectF(x, y, x + mini, y + mini), p)
             }
         } catch (e: Exception) {
             Log.e(TAG, "folderIcon", e)
@@ -859,8 +886,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     private fun isUserApp(pkg: String): Boolean = try {
         val ai = packageManager.getApplicationInfo(pkg, 0)
-        (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0 ||
-            (ai.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+        (ai.flags and ApplicationInfo.FLAG_SYSTEM) == 0 ||
+            (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
     } catch (e: Exception) {
         false
     }
@@ -1018,10 +1045,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             overlay.t = v
             applyIconBlur(v)
         }
-        a.addListener(object : android.animation.AnimatorListenerAdapter() {
+        a.addListener(object : AnimatorListenerAdapter() {
             private var cancelled = false
-            override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
-            override fun onAnimationEnd(animation: android.animation.Animator) {
+            override fun onAnimationCancel(animation: Animator) { cancelled = true }
+            override fun onAnimationEnd(animation: Animator) {
                 if (!cancelled) {
                     stage.setLayerType(View.LAYER_TYPE_NONE, null)
                     onEnd()
@@ -1074,8 +1101,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             drawerView.setStyle(s)
             categoryDrawer?.applyStyle(s)
             home.setDockIconDp(dockIconDp())
-            for (a in home.pageAdapters) a.applyStyle(s)
-            home.dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp()))
+            for (a in home.pageAdapters) a.applyStyle(s.copy(labels = false))
+            home.dockAdapter.applyStyle(s.copy(sizeDp = dockIconDp(), labels = false))
         } catch (e: Exception) {
             Log.e(TAG, "iconStyle", e)
         }
