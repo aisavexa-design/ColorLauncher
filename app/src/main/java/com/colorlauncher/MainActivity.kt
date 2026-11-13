@@ -478,8 +478,8 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         root.addView(overlay, FrameLayout.LayoutParams(MATCH, MATCH))
 
         searchBar = SearchBar(this, { dp(it) }, { v, i -> launch(v, i) }) { p ->
-    home.layer.alpha = 1f - p
-    home.layer.visibility = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
+            home.layer.alpha = 1f - p
+            home.layer.visibility = if (p > 0.999f) View.INVISIBLE else View.VISIBLE
         }
         root.addView(searchBar.layer, FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -523,7 +523,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             home.layer.setPadding(0, top + dp(24), 0, bottom)
             (home.removeZone.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
             drawerView.setInsets(top, bottom, ime)
-         if (::searchBar.isInitialized) searchBar.setTopInset(top)
+            if (::searchBar.isInitialized) searchBar.setTopInset(top)
         } catch (e: Exception) {
             Log.e(TAG, "insets", e)
         }
@@ -613,6 +613,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun canStartDrag(dy: Float): Boolean {
         if (home.dragLock || folderView.isOpen || drawerView.searching || pendingReturn) return false
+        if (::searchBar.isInitialized && searchBar.isShown()) return false
         return if (drawerView.progress <= 0.5f) dy < 0
         else dy > 0 && !drawerView.list.canScrollVertically(-1)
     }
@@ -641,6 +642,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     override fun canStartPageSwipe(dx: Float): Boolean {
         if (home.dragLock || folderView.isOpen || drawerView.progress > 0.01f || pendingReturn) return false
+        if (::searchBar.isInitialized && searchBar.isShown()) return false
         return if (dx < 0) home.currentPage < home.pageCount - 1 else home.currentPage > 0
     }
 
