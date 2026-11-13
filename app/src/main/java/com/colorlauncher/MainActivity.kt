@@ -523,6 +523,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             home.layer.setPadding(0, top + dp(24), 0, bottom)
             (home.removeZone.layoutParams as FrameLayout.LayoutParams).topMargin = top + dp(8)
             drawerView.setInsets(top, bottom, ime)
+         if (::searchBar.isInitialized) searchBar.setTopInset(top)
         } catch (e: Exception) {
             Log.e(TAG, "insets", e)
         }
