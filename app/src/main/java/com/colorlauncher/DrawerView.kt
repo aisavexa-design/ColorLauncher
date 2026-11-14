@@ -54,7 +54,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
     var canStretch = true
 
     private val density = ctx.resources.displayMetrics.density
-    private val maxStretch = 130f * density
+    private val maxStretch = 200f * density
     private var lastY = 0f
     private var touching = false
     private var stretchPx = 0f
@@ -121,10 +121,10 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val atBottom = !canScrollVertically(1)
         if (atTop && dy < 0) {
             animating?.cancel()
-            setTarget(stretchPx + (-dy) * 4.0f)
+            setTarget(stretchPx + (-dy) * 6.0f)
         } else if (atBottom && dy > 0) {
             animating?.cancel()
-            setTarget(stretchPx - dy * 4.0f)
+            setTarget(stretchPx - dy * 6.0f)
         }
     }
 
@@ -157,7 +157,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
                 val atTop = !canScrollVertically(-1)
                 val atBottom = !canScrollVertically(1)
                 if ((atTop && dy > 0) || (atBottom && dy < 0) || stretchPx != 0f) {
-                    setTarget(stretchPx + dy * 0.8f)
+                    setTarget(stretchPx + dy * 1.2f)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
