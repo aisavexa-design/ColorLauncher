@@ -8,7 +8,6 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.animation.Interpolator
 import android.view.animation.OvershootInterpolator
@@ -24,6 +23,7 @@ import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import kotlin.math.abs
 
 private const val DV_TAG = "CL"
 private const val DV_MATCH = ViewGroup.LayoutParams.MATCH_PARENT
@@ -44,37 +44,34 @@ private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
 
 /**
  * RecyclerView: fading edge + icon-level elastic stretch.
- * - Finger drag par edge overscroll (touch).
- * - Fling/scroll ke dauran edge par pahunchne par velocity-based overscroll (automatic).
- * - Stretch icons (children) par translationY se, smooth damping ke saath.
- * - Release par spring-back. canStretch = false par stretch band.
+ * - Finger drag par edge overscroll.
+ * - Fling ke dauran edge par stretch (scroll delta se).
+ * - Scroll/touch khatam hone par icons smoothly wapas 0 par.
+ * - canStretch = false par stretch band (drawer open/close ke waqt).
  */
 class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     var canStretch = true
 
     private val density = ctx.resources.displayMetrics.density
-    private val maxStretch = 64f * density
+    private val maxStretch = 90f * density
     private var lastY = 0f
     private var touching = false
-    private var stretchPx = 0f          // current target offset
-    private var shownPx = 0f            // smoothly follow karta hai target ko
+    private var stretchPx = 0f
+    private var shownPx = 0f
     private var animating: ValueAnimator? = null
     private var smoothing = false
 
     private val smoother = object : Runnable {
         override fun run() {
-            // Target ki taraf smooth follow (frame-rate independent sa lerp)
-            val diff = stretchPx - shownPx
-            if (kotlin.math.abs(diff) < 0.3f) {
-                shownPx = stretchPx
-                applyStretch(shownPx)
-                smoothing = false
-                return
-            }
-            shownPx += diff * 0.35f
+            shownPx += (stretchPx - shownPx) * 0.3f
+            if (abs(stretchPx - shownPx) < 0.2f) shownPx = stretchPx
             applyStretch(shownPx)
-            postOnAnimation(this)
+            if (shownPx != stretchPx) {
+                postOnAnimation(this)
+            } else {
+                smoothing = false
+            }
         }
     }
 
@@ -94,6 +91,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         animating = null
         stretchPx = 0f
         shownPx = 0f
+        smoothing = false
         applyStretch(0f)
     }
 
@@ -103,15 +101,19 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         }
     }
 
-    private fun setTarget(px: Float) {
-        stretchPx = px.coerceIn(-maxStretch, maxStretch)
+    private fun kick() {
         if (!smoothing) {
             smoothing = true
             postOnAnimation(smoother)
         }
     }
 
-    /** Fling / scroll ke dauran edge par pahunchne par automatic stretch (velocity se). */
+    private fun setTarget(px: Float) {
+        stretchPx = px.coerceIn(-maxStretch, maxStretch)
+        kick()
+    }
+
+    /** Scroll (touch ya fling) ke dauran edge par stretch. */
     override fun onScrolled(dx: Int, dy: Int) {
         super.onScrolled(dx, dy)
         if (!canStretch || touching) return
@@ -119,11 +121,18 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val atBottom = !canScrollVertically(1)
         if (atTop && dy < 0) {
             animating?.cancel()
-            setTarget(stretchPx + (-dy) * 0.7f)
+            setTarget(stretchPx + (-dy) * 2.2f)
         } else if (atBottom && dy > 0) {
             animating?.cancel()
-            setTarget(stretchPx - dy * 0.7f)
+            setTarget(stretchPx - dy * 2.2f)
+        } else if (!atTop && !atBottom && stretchPx != 0f) {
+            springBack()
         }
+    }
+
+    override fun onScrollStateChanged(state: Int) {
+        super.onScrollStateChanged(state)
+        if (state == SCROLL_STATE_IDLE && !touching && stretchPx != 0f) springBack()
     }
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
@@ -146,35 +155,31 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
             MotionEvent.ACTION_MOVE -> {
                 val dy = e.y - lastY
                 lastY = e.y
-                if (!touching || !canStretch) return r
+                if (!canStretch) return r
                 val atTop = !canScrollVertically(-1)
                 val atBottom = !canScrollVertically(1)
                 if ((atTop && dy > 0) || (atBottom && dy < 0) || stretchPx != 0f) {
-                    setTarget(stretchPx + dy * 0.45f)
+                    setTarget(stretchPx + dy * 0.8f)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 touching = false
-                releaseStretch()
+                springBack()
             }
         }
         return r
     }
 
-    /** Release par spring-back: target 0 par, smoother usko smoothly le jayega. */
-    private fun releaseStretch() {
-        if (stretchPx == 0f) return
-        val start = stretchPx
+    private fun springBack() {
         animating?.cancel()
+        val start = stretchPx
+        if (start == 0f) return
         val a = ValueAnimator.ofFloat(start, 0f)
-        a.duration = 380
-        a.interpolator = OvershootInterpolator(0.45f)
+        a.duration = 420
+        a.interpolator = OvershootInterpolator(0.4f)
         a.addUpdateListener {
             stretchPx = it.animatedValue as Float
-            if (!smoothing) {
-                smoothing = true
-                postOnAnimation(smoother)
-            }
+            kick()
         }
         animating = a
         a.start()
