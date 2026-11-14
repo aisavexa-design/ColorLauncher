@@ -55,6 +55,37 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 }
 
 /**
+ * ColorOS jaisa depth: list ke top aur bottom edge par icons chhote aur halke,
+ * center mein poore. Har scroll frame par visible children ki position se set hota hai.
+ */
+private class DepthScroll : RecyclerView.OnScrollListener() {
+    override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) = apply(rv)
+
+    override fun onScrollStateChanged(rv: RecyclerView, newState: Int) = apply(rv)
+
+    /** Layout ke baad bhi ek baar apply karo (naye items ke liye). */
+    fun apply(rv: RecyclerView) {
+        val h = rv.height.toFloat()
+        if (h <= 0f) return
+        val top = rv.paddingTop.toFloat()
+        val bottom = h - rv.paddingBottom
+        val band = (bottom - top) * 0.22f
+        for (i in 0 until rv.childCount) {
+            val v = rv.getChildAt(i)
+            val cy = v.top + v.height / 2f
+            val dTop = cy - top
+            val dBottom = bottom - cy
+            val edge = minOf(dTop, dBottom)
+            val t = (edge / band).coerceIn(0f, 1f)
+            val s = 0.82f + 0.18f * t
+            v.scaleX = s
+            v.scaleY = s
+            v.alpha = 0.35f + 0.65f * t
+        }
+    }
+}
+
+/**
  * Simple drawer (A-Z list). Header (title, search, search button), apps grid.
  * Progress (0..1) spring se animate hota hai; MainActivity isko home/drawer visibility ke liye use karta hai.
  */
@@ -68,7 +99,6 @@ class DrawerView(
     private val dp: (Int) -> Int,
     private val onProgress: (Float) -> Unit
 ) {
-    /** Root view jo MainActivity stage mein add karega. */
     val layer: FrameLayout
     val list: RecyclerView
     val adapter: AppAdapter
@@ -76,11 +106,9 @@ class DrawerView(
     val searchBox: EditText
     val header: LinearLayout
 
-    /** Search mode chal raha hai ya nahi. */
     var searching: Boolean = false
         private set
 
-    /** Drawer ka current progress (0 = band, 1 = poora khula). */
     var progress: Float = 0f
         private set
 
@@ -89,6 +117,7 @@ class DrawerView(
     private var bottomGap = 0
     private var allApps: List<AppItem> = emptyList()
     private var anim: SpringAnimation? = null
+    private val depth = DepthScroll()
 
     init {
         adapter = AppAdapter(true, { v, i -> onLaunch(v, i) }, null)
@@ -110,6 +139,7 @@ class DrawerView(
             isVerticalFadingEdgeEnabled = true
             setFadingEdgeLength(dp(56))
             setPadding(dp(8), dp(64), dp(8), 0)
+            addOnScrollListener(depth)
         }
         list.addItemDecoration(object : RecyclerView.ItemDecoration() {
             override fun getItemOffsets(outRect: Rect, view: View, parent: RecyclerView, state: RecyclerView.State) {
@@ -165,7 +195,6 @@ class DrawerView(
         }
     }
 
-    /** Apps list update karo (load ke baad, ya package change par). */
     fun submitApps(apps: List<AppItem>) {
         allApps = apps
         filter(searchBox.text?.toString() ?: "")
@@ -178,7 +207,6 @@ class DrawerView(
         list.invalidateItemDecorations()
     }
 
-    /** Insets se top/bottom padding (MainActivity applyInsets se call karega). */
     fun setInsets(top: Int, bottom: Int, ime: Int) {
         (header.layoutParams as FrameLayout.LayoutParams).topMargin = top
         header.requestLayout()
@@ -196,12 +224,12 @@ class DrawerView(
         }
     }
 
-    /** Drawer progress set karo. Visibility aur alpha yahin se update hote hain. */
     fun setProgress(p: Float) {
         try {
             progress = p
             layer.alpha = p
-            layer.translationY = (1f - p) * 0.25f * (layer.parent as? View)?.height.let { (it ?: 0).toFloat() }
+            val ph = (layer.parent as? View)?.height ?: 0
+            layer.translationY = (1f - p) * 0.25f * ph
             val v = if (p > 0.001f) View.VISIBLE else View.INVISIBLE
             if (layer.visibility != v) layer.visibility = v
             onProgress(p)
@@ -210,7 +238,6 @@ class DrawerView(
         }
     }
 
-    /** Spring se drawer ko target (0 ya 1) tak le jao. */
     fun animateTo(target: Float, velocity: Float, onEnd: () -> Unit) {
         try {
             anim?.cancel()
@@ -231,12 +258,13 @@ class DrawerView(
             Log.e(DV_TAG, "animateTo", e)
         }
     }
-    fun isAnimating(): Boolean = anim?.isRunning == true
+
     fun cancelAnim() {
         anim?.cancel()
     }
 
-    /** Search mode on/off, title/search box switch aur rows ki animation. */
+    fun isAnimating(): Boolean = anim?.isRunning == true
+
     fun setSearch(on: Boolean, imm: InputMethodManager?) {
         try {
             searching = on
@@ -258,7 +286,6 @@ class DrawerView(
         }
     }
 
-    /** Har row ek-ek karke neeche se rubber (overshoot) ke saath aati hai. */
     private fun playRows(show: Boolean) {
         for (i in 0 until list.childCount) {
             val v = list.getChildAt(i)
