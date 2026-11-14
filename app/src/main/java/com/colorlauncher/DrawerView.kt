@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.animation.Interpolator
 import android.view.animation.OvershootInterpolator
@@ -29,7 +30,7 @@ private const val DV_MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val DV_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 private const val DV_COLS = 4
 
-/** Edge glow band karne ke liye (bottom ke alawa). */
+/** Edge glow band karne ke liye. */
 private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
     override fun setSize(width: Int, height: Int) {}
     override fun isFinished(): Boolean = true
@@ -42,18 +43,20 @@ private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
 }
 
 /**
- * RecyclerView: fading edge + ColorOS jaisa elastic stretch (sirf list scroll par).
- * canStretch = false hone par (drawer open/close gesture) stretch nahi hota.
+ * RecyclerView: fading edge + icon-level elastic stretch.
+ * Stretch finger ki movement se hota hai, sirf top/bottom edge par, aur har visible
+ * icon ko translationY dekar (poora grid nahi). canStretch = false par stretch band.
  */
 class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     var canStretch = true
 
-    /** Stretch ka current amount (px). */
-    var stretchPx = 0f
-        private set
-
-    private val maxStretch = 60f * ctx.resources.displayMetrics.density
+    private val density = ctx.resources.displayMetrics.density
+    private val maxStretch = 56f * density
+    private val touchSlop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private var lastY = 0f
+    private var touching = false
+    private var stretchPx = 0f
     private var animating: ValueAnimator? = null
 
     override fun getTopFadingEdgeStrength(): Float {
@@ -67,36 +70,60 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         return (rest / len).coerceIn(0f, 1f)
     }
 
-    /** Stretch band karke turant 0 par. */
+    /** Stretch turant 0 par (drawer open/close ke waqt). */
     fun resetStretch() {
         animating?.cancel()
         animating = null
-        setStretch(0f)
+        stretchPx = 0f
+        applyStretch(0f)
     }
 
-    private fun setStretch(px: Float) {
+    /** Har visible icon ko stretch ka offset do (edge ke hisaab se). */
+    private fun applyStretch(px: Float) {
         stretchPx = px
-        translationY = px
+        for (i in 0 until childCount) {
+            val v = getChildAt(i)
+            v.translationY = px
+        }
     }
 
-    override fun onScrolled(dx: Int, dy: Int) {
-        super.onScrolled(dx, dy)
-        if (!canStretch) return
-        val atTop = !canScrollVertically(-1)
-        val atBottom = !canScrollVertically(1)
-        // Sirf list ki overscroll par (top par upar scroll, bottom par neeche scroll)
-        if ((atTop && dy < 0) || (atBottom && dy > 0)) {
-            animating?.cancel()
-            val add = -dy * 0.9f
-            val next = (stretchPx + add).coerceIn(-maxStretch, maxStretch)
-            setStretch(next)
+    override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+            lastY = e.y
+            touching = true
         }
+        return super.onInterceptTouchEvent(e)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         val r = super.onTouchEvent(e)
-        if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) {
-            releaseStretch()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                lastY = e.y
+                touching = true
+                animating?.cancel()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!touching || !canStretch) {
+                    lastY = e.y
+                    return r
+                }
+                val dy = e.y - lastY
+                lastY = e.y
+                val atTop = !canScrollVertically(-1)
+                val atBottom = !canScrollVertically(1)
+                // Top par neeche (dy>0) ya bottom par upar (dy<0) sirf tab stretch
+                val overTop = atTop && dy > 0 && stretchPx >= 0f
+                val overBottom = atBottom && dy < 0 && stretchPx <= 0f
+                if (overTop || overBottom || stretchPx != 0f) {
+                    val next = (stretchPx + dy * 0.45f).coerceIn(-maxStretch, maxStretch)
+                    applyStretch(next)
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                touching = false
+                releaseStretch()
+            }
         }
         return r
     }
@@ -107,9 +134,9 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val start = stretchPx
         animating?.cancel()
         val a = ValueAnimator.ofFloat(start, 0f)
-        a.duration = 320
-        a.interpolator = OvershootInterpolator(0.6f)
-        a.addUpdateListener { setStretch(it.animatedValue as Float) }
+        a.duration = 360
+        a.interpolator = OvershootInterpolator(0.5f)
+        a.addUpdateListener { applyStretch(it.animatedValue as Float) }
         animating = a
         a.start()
     }
@@ -255,7 +282,6 @@ class DrawerView(
     fun setProgress(p: Float) {
         try {
             progress = p
-            // Drawer open/close ke dauran list stretch nahi, jo bacha ho wo reset
             if (p < 0.999f) list.resetStretch()
             layer.alpha = p
             val ph = (layer.parent as? View)?.height ?: 0
