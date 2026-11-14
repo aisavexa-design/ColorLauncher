@@ -23,7 +23,6 @@ import androidx.dynamicanimation.animation.SpringAnimation
 import androidx.dynamicanimation.animation.SpringForce
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import kotlin.math.abs
 
 private const val DV_TAG = "CL"
 private const val DV_MATCH = ViewGroup.LayoutParams.MATCH_PARENT
@@ -43,20 +42,18 @@ private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
 }
 
 /**
- * RecyclerView: fading edge + ColorOS jaisa stretch.
- * Stretch sirf list ke overscroll par hota hai, aur tez scroll par zyada.
- * stretchTarget ko DrawerView set karta hai (drawer open/close gesture ke waqt false).
+ * RecyclerView: fading edge + ColorOS jaisa elastic stretch (sirf list scroll par).
+ * canStretch = false hone par (drawer open/close gesture) stretch nahi hota.
  */
 class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     var canStretch = true
 
-    /** Stretch ka current amount (px). Grid ke translationY se apply hota hai. */
+    /** Stretch ka current amount (px). */
     var stretchPx = 0f
         private set
 
     private val maxStretch = 60f * ctx.resources.displayMetrics.density
-    private var overTop = 0f
     private var animating: ValueAnimator? = null
 
     override fun getTopFadingEdgeStrength(): Float {
@@ -70,9 +67,10 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         return (rest / len).coerceIn(0f, 1f)
     }
 
-    /** Drawer ke open/close gesture ke waqt stretch band, aur jo stretch hai wo reset. */
+    /** Stretch band karke turant 0 par. */
     fun resetStretch() {
         animating?.cancel()
+        animating = null
         setStretch(0f)
     }
 
@@ -81,13 +79,12 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         translationY = px
     }
 
-    /** Overscroll ka stretch: velocity-based (dy), top aur bottom dono. */
     override fun onScrolled(dx: Int, dy: Int) {
         super.onScrolled(dx, dy)
         if (!canStretch) return
-        // Overscroll ke dauran (list edge par) stretch badhao
         val atTop = !canScrollVertically(-1)
         val atBottom = !canScrollVertically(1)
+        // Sirf list ki overscroll par (top par upar scroll, bottom par neeche scroll)
         if ((atTop && dy < 0) || (atBottom && dy > 0)) {
             animating?.cancel()
             val add = -dy * 0.9f
@@ -104,7 +101,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         return r
     }
 
-    /** Release par spring jaisa wapas 0 par. */
+    /** Finger uthane par spring jaisa wapas 0 par. */
     private fun releaseStretch() {
         if (stretchPx == 0f) return
         val start = stretchPx
@@ -258,8 +255,8 @@ class DrawerView(
     fun setProgress(p: Float) {
         try {
             progress = p
-            // Drawer open/close ke dauran stretch nahi, aur jo bacha ho wo reset
-            if (p < 0.999f && p > 0.001f) list.resetStretch()
+            // Drawer open/close ke dauran list stretch nahi, jo bacha ho wo reset
+            if (p < 0.999f) list.resetStretch()
             layer.alpha = p
             val ph = (layer.parent as? View)?.height ?: 0
             layer.translationY = (1f - p) * 0.25f * ph
@@ -271,11 +268,17 @@ class DrawerView(
         }
     }
 
+    /** Drawer open/close gesture ke waqt list stretch band. */
+    fun setDrawerGesture(active: Boolean) {
+        list.canStretch = !active
+        if (active) list.resetStretch()
+    }
+
     fun animateTo(target: Float, velocity: Float, onEnd: () -> Unit) {
         try {
             anim?.cancel()
-            list.resetStretch()
             list.canStretch = false
+            list.resetStretch()
             val a = SpringAnimation(FloatValueHolder(progress))
             a.spring = SpringForce(target).setStiffness(380f).setDampingRatio(0.92f)
             a.setStartVelocity(velocity)
