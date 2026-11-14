@@ -43,18 +43,17 @@ private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
 }
 
 /**
- * RecyclerView: fading edge + icon-level elastic stretch.
- * - Finger drag par edge overscroll.
- * - Fling ke dauran edge par stretch (scroll delta se).
- * - Touch release par spring-back, aur scroll idle hone par smooth wapas 0.
- * - canStretch = false par stretch band (drawer open/close ke waqt).
+ * RecyclerView: fading edge + elastic stretch.
+ * Stretch poore list (RecyclerView) ke translationY par hota hai, isliye icons ek saath
+ * shift hote hain aur kabhi overlap nahi karte. Child views ko kuch nahi kiya jata.
+ * canStretch = false par stretch band (drawer open/close ke waqt).
  */
 class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     var canStretch = true
 
     private val density = ctx.resources.displayMetrics.density
-    private val maxStretch = 200f * density
+    private val maxStretch = 120f * density
     private var lastY = 0f
     private var touching = false
     private var stretchPx = 0f
@@ -64,9 +63,9 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     private val smoother = object : Runnable {
         override fun run() {
-            shownPx += (stretchPx - shownPx) * 0.12f
-            if (abs(stretchPx - shownPx) < 0.2f) shownPx = stretchPx
-            applyStretch(shownPx)
+            shownPx += (stretchPx - shownPx) * 0.15f
+            if (abs(stretchPx - shownPx) < 0.3f) shownPx = stretchPx
+            translationY = shownPx
             if (shownPx != stretchPx) {
                 postOnAnimation(this)
             } else {
@@ -92,13 +91,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         stretchPx = 0f
         shownPx = 0f
         smoothing = false
-        applyStretch(0f)
-    }
-
-    private fun applyStretch(px: Float) {
-        for (i in 0 until childCount) {
-            getChildAt(i).translationY = px
-        }
+        translationY = 0f
     }
 
     private fun kick() {
@@ -113,7 +106,6 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         kick()
     }
 
-    /** Scroll (touch ya fling) ke dauran edge par stretch. */
     override fun onScrolled(dx: Int, dy: Int) {
         super.onScrolled(dx, dy)
         if (!canStretch || touching) return
@@ -121,10 +113,10 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val atBottom = !canScrollVertically(1)
         if (atTop && dy < 0) {
             animating?.cancel()
-            setTarget(stretchPx + (-dy) * 6.0f)
+            setTarget(stretchPx + (-dy) * 2.5f)
         } else if (atBottom && dy > 0) {
             animating?.cancel()
-            setTarget(stretchPx - dy * 6.0f)
+            setTarget(stretchPx - dy * 2.5f)
         }
     }
 
@@ -157,7 +149,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
                 val atTop = !canScrollVertically(-1)
                 val atBottom = !canScrollVertically(1)
                 if ((atTop && dy > 0) || (atBottom && dy < 0) || stretchPx != 0f) {
-                    setTarget(stretchPx + dy * 1.2f)
+                    setTarget(stretchPx + dy * 0.6f)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -173,7 +165,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val start = stretchPx
         if (start == 0f) return
         val a = ValueAnimator.ofFloat(start, 0f)
-        a.duration = 900
+        a.duration = 700
         a.interpolator = OvershootInterpolator(0.4f)
         a.addUpdateListener {
             stretchPx = it.animatedValue as Float
