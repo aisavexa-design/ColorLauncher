@@ -46,7 +46,7 @@ private class DvNoEdge(ctx: Context) : EdgeEffect(ctx) {
  * RecyclerView: fading edge + icon-level elastic stretch.
  * - Finger drag par edge overscroll.
  * - Fling ke dauran edge par stretch (scroll delta se).
- * - Scroll/touch khatam hone par icons smoothly wapas 0 par.
+ * - Touch release par spring-back, aur scroll idle hone par smooth wapas 0.
  * - canStretch = false par stretch band (drawer open/close ke waqt).
  */
 class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
@@ -54,7 +54,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
     var canStretch = true
 
     private val density = ctx.resources.displayMetrics.density
-    private val maxStretch = 90f * density
+    private val maxStretch = 130f * density
     private var lastY = 0f
     private var touching = false
     private var stretchPx = 0f
@@ -64,7 +64,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
 
     private val smoother = object : Runnable {
         override fun run() {
-            shownPx += (stretchPx - shownPx) * 0.3f
+            shownPx += (stretchPx - shownPx) * 0.12f
             if (abs(stretchPx - shownPx) < 0.2f) shownPx = stretchPx
             applyStretch(shownPx)
             if (shownPx != stretchPx) {
@@ -121,12 +121,10 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val atBottom = !canScrollVertically(1)
         if (atTop && dy < 0) {
             animating?.cancel()
-            setTarget(stretchPx + (-dy) * 2.2f)
+            setTarget(stretchPx + (-dy) * 4.0f)
         } else if (atBottom && dy > 0) {
             animating?.cancel()
-            setTarget(stretchPx - dy * 2.2f)
-        } else if (!atTop && !atBottom && stretchPx != 0f) {
-            springBack()
+            setTarget(stretchPx - dy * 4.0f)
         }
     }
 
@@ -175,7 +173,7 @@ class DvFadeRecycler(ctx: Context) : RecyclerView(ctx) {
         val start = stretchPx
         if (start == 0f) return
         val a = ValueAnimator.ofFloat(start, 0f)
-        a.duration = 420
+        a.duration = 900
         a.interpolator = OvershootInterpolator(0.4f)
         a.addUpdateListener {
             stretchPx = it.animatedValue as Float
