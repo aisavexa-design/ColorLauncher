@@ -94,6 +94,17 @@ class AppAdapter(
 
     override fun onBindViewHolder(h: VH, position: Int) {
         try {
+            // Har bind par purana offset/scale saaf: stretch ya intro animation ka asar na rahe
+            h.root.translationY = 0f
+            h.root.translationX = 0f
+            h.root.scaleX = 1f
+            h.root.scaleY = 1f
+            h.root.alpha = 1f
+            h.icon.translationY = 0f
+            h.icon.scaleX = 1f
+            h.icon.scaleY = 1f
+            h.icon.alpha = 1f
+
             val d = h.root.resources.displayMetrics.density
             val px = (style.sizeDp * d).toInt()
             val lp = h.icon.layoutParams
