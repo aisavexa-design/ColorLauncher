@@ -622,6 +622,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         drawerView.cancelAnim()
         dragBase = drawerView.progress
         setLayers(true)
+        drawerView.setDrawerGesture(true)
     }
 
     override fun onDrag(dy: Float) {
@@ -629,6 +630,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     }
 
     override fun onDragEnd(vy: Float) {
+        drawerView.setDrawerGesture(false)
         val v = -vy / dist()
         val open = when {
             v > 0.6f -> true
