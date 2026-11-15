@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var customAnim = true
     private var closeAnimOn = true
     private var animMs = 497L
+    private var closeMs = 320L
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
@@ -119,10 +120,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
+
     private var originRect: RectF? = null
     private var originColor = Color.DKGRAY
     private var originIcon: Bitmap? = null
-    private var originView: View? = null
 
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
 
@@ -338,6 +339,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         customAnim = s.getBoolean("custom_anim", true)
         closeAnimOn = s.getBoolean("close_anim", true)
         animMs = s.getInt("anim_ms", 497).toLong()
+        closeMs = s.getInt("close_anim_ms", 320).toLong()
     }
 
     // ---------------- Snapshot ----------------
@@ -977,10 +979,11 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             pendingReturn = true
 
             if (customAnim) {
+                val col = avgColor(item.icon)
                 originRect = RectF(l, t, l + view.width, t + view.height)
-                originColor = avgColor(item.icon)
+                originColor = col
                 originIcon = item.icon
-                overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
+                overlay.prepare(l, t, l + view.width, t + view.height, col, item.icon)
                 overlay.visibility = View.VISIBLE
                 animateLaunch(1f, animMs) { startApp(item) }
             } else {
@@ -995,6 +998,11 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private fun startApp(item: AppItem) {
         try {
             drawerView.setSearch(false, imm())
+            // Drawer turant band, taaki app wapas aane par home screen dikhe
+            if (drawerView.progress > 0f) {
+                drawerView.cancelAnim()
+                drawerView.setProgress(0f)
+            }
             val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
             folderView.closeInstant()
@@ -1023,17 +1031,18 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
     }
 
-        private fun playCloseAnim() {
+    private fun playCloseAnim() {
         try {
             if (!closeAnimOn) {
                 stage.alpha = 1f
                 stage.scaleX = 1f
                 stage.scaleY = 1f
+                overlay.visibility = View.GONE
+                originRect = null
                 return
             }
             closeAnimator?.cancel()
             val o = originRect
-            // Origin hai to overlay ko origin par rakho, warna notch se
             if (o != null) {
                 overlay.prepare(o.left, o.top, o.right, o.bottom, originColor, originIcon ?: return)
             } else {
@@ -1045,7 +1054,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             stage.scaleX = 1f
             stage.scaleY = 1f
             val a = ValueAnimator.ofFloat(1f, 0f)
-            a.duration = 320
+            a.duration = closeMs
             a.interpolator = emphasized
             a.addUpdateListener {
                 val v = it.animatedValue as Float
@@ -1065,16 +1074,16 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         } catch (e: Exception) {
             Log.e(TAG, "closeAnim", e)
         }
-        }
+    }
 
-        private fun applyDepth(d: Float) {
+    private fun applyDepth(d: Float) {
         depth = d
         val c = d.coerceIn(0f, 1f)
         val s = 1f + 0.22f * c
         stage.scaleX = s
         stage.scaleY = s
         stage.alpha = (1f - 0.55f * c * c).coerceIn(0f, 1f)
-        }
+    }
 
     private fun animateLaunch(to: Float, duration: Long, onEnd: () -> Unit) {
         launchAnim?.cancel()
