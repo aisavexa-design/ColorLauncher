@@ -247,7 +247,14 @@ class SettingsActivity : Activity() {
             addView(divider())
             addView(
                 sliderRow(
-                    "App open speed", 150, 600, prefs.getInt("anim_ms", 497), "ms",
+                    "App close speed", 150, 1000, prefs.getInt("close_anim_ms", 320), "ms",
+                    "Lower value = faster close animation"
+                ) { prefs.edit().putInt("close_anim_ms", it).apply() }
+            )
+            addView(divider())
+            addView(
+                sliderRow(
+                    "App open speed", 150, 1000, prefs.getInt("anim_ms", 497), "ms",
                     "Lower value = faster animation"
                 ) { prefs.edit().putInt("anim_ms", it).apply() }
             )
