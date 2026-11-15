@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var closeAnimOn = true
     private var animMs = 497L
     private var closeMs = 320L
+    private var notchCloseMs = 280L
     private var lastTop = -1
     private var lastBottom = -1
     private var lastIme = -1
@@ -118,6 +119,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var lastStageStep = -1
     private var lastIconStep = -1
     private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
+    private val notchInterp = PathInterpolator(0.2f, 0.6f, 0.3f, 1f)
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
 
@@ -341,6 +343,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         closeAnimOn = s.getBoolean("close_anim", true)
         animMs = s.getInt("anim_ms", 497).toLong()
         closeMs = s.getInt("close_anim_ms", 320).toLong()
+        notchCloseMs = s.getInt("notch_close_ms", 280).toLong()
     }
 
     // ---------------- Snapshot ----------------
@@ -1065,17 +1068,16 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             stage.alpha = 0f
             stage.scaleX = 1f
             stage.scaleY = 1f
-            // Notch ke liye fast ease-in (tez shrink), icon ke liye normal ease
-            val interp = if (rect != null) emphasized
-            else android.view.animation.PathInterpolator(0.5f, 0f, 0.9f, 0.6f)
+            val duration = if (rect != null) closeMs else notchCloseMs
+            val interp = if (rect != null) emphasized else notchInterp
             val a = ValueAnimator.ofFloat(1f, 0f)
-            a.duration = if (rect != null) closeMs else closeMs.coerceAtMost(300L)
+            a.duration = duration
             a.interpolator = interp
             a.addUpdateListener {
                 val v = it.animatedValue as Float
                 overlay.t = v
                 stage.alpha = 1f - v
-                applyIconBlur(v)
+                if (rect != null) applyIconBlur(v)
             }
             a.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
