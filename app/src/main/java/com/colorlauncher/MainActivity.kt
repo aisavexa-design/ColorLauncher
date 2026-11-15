@@ -1046,19 +1046,21 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
     }
 
-    private fun applyDepth(d: Float) {
+        private fun applyDepth(d: Float) {
         depth = d
-        stage.scaleX = 1f + 0.14f * d
-        stage.scaleY = 1f + 0.14f * d
-        stage.alpha = (1f - 0.6f * d.coerceIn(0f, 1f)).coerceIn(0f, 1f)
-    }
+        val c = d.coerceIn(0f, 1f)
+        val s = 1f + 0.22f * c
+        stage.scaleX = s
+        stage.scaleY = s
+        stage.alpha = (1f - 0.55f * c * c).coerceIn(0f, 1f)
+        }
 
     private fun animateLaunch(to: Float, duration: Long, onEnd: () -> Unit) {
         launchAnim?.cancel()
         stage.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         val a = ValueAnimator.ofFloat(depth, to)
         a.duration = duration
-        a.interpolator = emphasized
+        a.interpolator = OvershootInterpolator(0.6f)
         a.addUpdateListener {
             val v = it.animatedValue as Float
             applyDepth(v)
