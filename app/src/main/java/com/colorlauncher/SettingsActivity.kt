@@ -254,6 +254,13 @@ class SettingsActivity : Activity() {
             addView(divider())
             addView(
                 sliderRow(
+                    "Notch close speed", 150, 1000, prefs.getInt("notch_close_ms", 280), "ms",
+                    "Notch par jaane wale close animation ki speed. Lower = tez"
+                ) { prefs.edit().putInt("notch_close_ms", it).apply() }
+            )
+            addView(divider())
+            addView(
+                sliderRow(
                     "App open speed", 150, 1000, prefs.getInt("anim_ms", 497), "ms",
                     "Lower value = faster animation"
                 ) { prefs.edit().putInt("anim_ms", it).apply() }
