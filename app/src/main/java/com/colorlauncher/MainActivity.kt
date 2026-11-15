@@ -1065,9 +1065,12 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             stage.alpha = 0f
             stage.scaleX = 1f
             stage.scaleY = 1f
+            // Notch ke liye fast ease-in (tez shrink), icon ke liye normal ease
+            val interp = if (rect != null) emphasized
+            else android.view.animation.PathInterpolator(0.5f, 0f, 0.9f, 0.6f)
             val a = ValueAnimator.ofFloat(1f, 0f)
-            a.duration = closeMs
-            a.interpolator = emphasized
+            a.duration = if (rect != null) closeMs else closeMs.coerceAtMost(300L)
+            a.interpolator = interp
             a.addUpdateListener {
                 val v = it.animatedValue as Float
                 overlay.t = v
