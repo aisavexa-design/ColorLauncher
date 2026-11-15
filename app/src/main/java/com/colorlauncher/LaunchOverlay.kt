@@ -61,7 +61,6 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         val w = width.toFloat()
         val h = height.toFloat()
 
-        // Position aur size: target (from) se full screen tak
         cur.set(
             from.left + (0f - from.left) * tt,
             from.top + (0f - from.top) * tt,
@@ -69,19 +68,17 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
             from.bottom + (h - from.bottom) * tt
         )
 
-        // Alpha: notch mode mein shrink ke saath fade out (tt ka thoda tez curve)
-        val a = if (notchMode) tt * tt * (3f - 2f * tt) else 1f
+        // Notch mode: shrink ke saath fade out. Icon mode: poora opaque.
+        val a = if (notchMode) tt * tt else 1f
         val alpha = (Color.alpha(color) * a).toInt().coerceIn(0, 255)
         sheet.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
         val rad = if (notchMode) {
-            from.height() / 2f + (startCorner - from.height() / 2f) * tt
+            val notchR = from.height() / 2f
+            notchR + (startCorner - notchR) * tt
         } else {
-            val target = from.height() * 0.28f
-            target + (endCorner - target) * (1f - tt) * 0f + (startCorner - target) * 0f +
-                (startCorner - endCorner) * 0f + endCorner * 0f + (startCorner - endCorner) * 0f +
-                (endCorner - startCorner) * 0f + (startCorner - startCorner) * 0f + ((endCorner - startCorner) * (1f - tt) + startCorner * 0f - startCorner * 0f) * 0f +
-                ((startCorner - endCorner) * tt) * 0f + (startCorner + (endCorner - startCorner) * tt - startCorner)
+            val iconR = from.height() * 0.28f
+            iconR + (endCorner - iconR) * (1f - tt)
         }
         canvas.drawRoundRect(cur, rad, rad, sheet)
 
