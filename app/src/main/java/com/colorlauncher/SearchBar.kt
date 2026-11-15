@@ -2,6 +2,7 @@ package com.colorlauncher
 
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
+import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
@@ -25,9 +26,9 @@ import android.widget.TextView
 
 /**
  * Home par niche swipe se khulne wala search panel (upar se aata hai).
- * - Open: 560ms, ease-out (tez shuru, dheere settle). Close: 400ms.
- * - Home ka fade panel ke 0.15 se 0.8 progress ke beech hota hai.
- * - Suggestion icons 70ms stagger se upar se neeche settle hote hain.
+ * - Open: 560ms ease-out. Close: 400ms.
+ * - Home ka fade panel ke 0.15 se 0.8 progress ke beech.
+ * - Suggestion icons 70ms stagger se settle hote hain.
  * - Keyboard panel ke ~60% khulne par dikhta hai.
  */
 class SearchBar(
@@ -79,7 +80,7 @@ class SearchBar(
                     if (dragging) {
                         val up = -(e.y - downY)
                         val h = sheet.height.takeIf { it > 0 } ?: dp(400)
-                        if (up > h * 0.25f) hide() else animateTo(1f)
+                        if (up > h * 0.25f) hide() else snapBack()
                     } else {
                         hide()
                     }
@@ -87,7 +88,7 @@ class SearchBar(
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) animateTo(1f)
+                    if (dragging) snapBack()
                     dragging = false
                     return true
                 }
@@ -227,11 +228,7 @@ class SearchBar(
         onProgress(homeFade(progress))
     }
 
-    /** Home ka alpha: 0.15..0.8 ke beech 1 se 0 tak, baaki pe fixed. */
-    private fun homeFade(p: Float): Float {
-        val f = ((p - 0.15f) / 0.65f).coerceIn(0f, 1f)
-        return f
-    }
+    private fun homeFade(p: Float): Float = ((p - 0.15f) / 0.65f).coerceIn(0f, 1f)
 
     private fun showKeyboard() {
         keyboardShown = true
@@ -271,7 +268,11 @@ class SearchBar(
         }
     }
 
-    private fun animateTo(target: Float, duration: Long, interp: android.animation.TimeInterpolator, end: (() -> Unit)? = null) {
+    private fun snapBack() {
+        animateTo(1f, 300L, openInterp)
+    }
+
+    private fun animateTo(target: Float, duration: Long, interp: TimeInterpolator, end: (() -> Unit)? = null) {
         anim?.cancel()
         val a = ValueAnimator.ofFloat(progress, target)
         a.duration = duration
@@ -283,11 +284,6 @@ class SearchBar(
         anim = a
         a.start()
     }
-
-    /** Swipe ke baad snap wapas (drag cancel). */
-    private fun snapBack() {
-        animateTo(1f, 300L, openInterp)
-        }
 
     fun isShown(): Boolean = shown
 }
