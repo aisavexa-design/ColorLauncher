@@ -48,6 +48,7 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 import kotlin.math.roundToInt
+import android.graphics.RectF
 
 private const val TAG = "CL"
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
@@ -119,6 +120,10 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private val emphasized = PathInterpolator(0.4f, 0f, 0.2f, 1f)
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
+    private var originRect: RectF? = null
+    private var originColor = Color.DKGRAY
+    private var originIcon: Bitmap? = null
+    private var originView: View? = null
 
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
 
@@ -973,6 +978,9 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             pendingReturn = true
 
             if (customAnim) {
+                originRect = RectF(l, t, l + view.width, t + view.height)
+                originColor = avgColor(item.icon)
+                originIcon = item.icon
                 overlay.prepare(l, t, l + view.width, t + view.height, avgColor(item.icon), item.icon)
                 overlay.visibility = View.VISIBLE
                 animateLaunch(1f, animMs) { startApp(item) }
@@ -1016,7 +1024,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
         }
     }
 
-    private fun playCloseAnim() {
+        private fun playCloseAnim() {
         try {
             if (!closeAnimOn) {
                 stage.alpha = 1f
@@ -1025,26 +1033,40 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
                 return
             }
             closeAnimator?.cancel()
+            val o = originRect
+            // Origin hai to overlay ko origin par rakho, warna notch se
+            if (o != null) {
+                overlay.prepare(o.left, o.top, o.right, o.bottom, originColor, originIcon ?: return)
+            } else {
+                overlay.prepareNotch(originColor, originIcon)
+            }
+            overlay.visibility = View.VISIBLE
+            overlay.t = 1f
             stage.alpha = 0f
-            stage.scaleX = 0.96f
-            stage.scaleY = 0.96f
-            val a = ValueAnimator.ofFloat(0f, 1f)
-            a.duration = 260
+            stage.scaleX = 1f
+            stage.scaleY = 1f
+            val a = ValueAnimator.ofFloat(1f, 0f)
+            a.duration = 320
             a.interpolator = emphasized
             a.addUpdateListener {
                 val v = it.animatedValue as Float
-                stage.alpha = v
-                val s = 0.96f + 0.04f * v
-                stage.scaleX = s
-                stage.scaleY = s
-                applyIconBlur(1f - v)
+                overlay.t = v
+                stage.alpha = 1f - v
+                applyIconBlur(v)
             }
+            a.addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    overlay.visibility = View.GONE
+                    stage.alpha = 1f
+                    originRect = null
+                }
+            })
             closeAnimator = a
             a.start()
         } catch (e: Exception) {
             Log.e(TAG, "closeAnim", e)
         }
-    }
+        }
 
         private fun applyDepth(d: Float) {
         depth = d
