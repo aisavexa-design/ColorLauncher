@@ -12,7 +12,7 @@ import android.view.View
  * Launch aur close overlay.
  * t = 1 : poori screen (app khula hua)
  * t = 0 : origin (icon rect) ya notch (top center) par chhota
- * Notch mode mein overlay chhota hokar notch ki taraf jata hai aur saath mein fade out hota hai.
+ * Corner radius: shuru mein 56dp, khatam hone par 36dp (launch aur close dono mein).
  */
 class LaunchOverlay(ctx: Context) : View(ctx) {
     private val density = resources.displayMetrics.density
@@ -62,8 +62,8 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         val h = height.toFloat()
 
         cur.set(
-            from.left + (0f - from.left) * tt,
-            from.top + (0f - from.top) * tt,
+            from.left * (1f - tt),
+            from.top * (1f - tt),
             from.right + (w - from.right) * tt,
             from.bottom + (h - from.bottom) * tt
         )
@@ -73,13 +73,8 @@ class LaunchOverlay(ctx: Context) : View(ctx) {
         val alpha = (Color.alpha(color) * a).toInt().coerceIn(0, 255)
         sheet.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
-        val rad = if (notchMode) {
-            val notchR = from.height() / 2f
-            notchR + (startCorner - notchR) * tt
-        } else {
-            val iconR = from.height() * 0.28f
-            iconR + (endCorner - iconR) * (1f - tt)
-        }
+        // Corner: startCorner (56dp) par shuru, endCorner (36dp) par khatam
+        val rad = startCorner + (endCorner - startCorner) * tt
         canvas.drawRoundRect(cur, rad, rad, sheet)
 
         val bmp = icon ?: return
