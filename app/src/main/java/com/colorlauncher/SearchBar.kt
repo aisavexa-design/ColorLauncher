@@ -287,7 +287,7 @@ class SearchBar(
     /** Swipe ke baad snap wapas (drag cancel). */
     private fun snapBack() {
         animateTo(1f, 300L, openInterp)
-    }
+        }
 
     fun isShown(): Boolean = shown
 }
