@@ -121,6 +121,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private var folderIconCache: Bitmap? = null
     private var folderIconKey = ""
 
+    private var originFromHome = false
     private var originRect: RectF? = null
     private var originColor = Color.DKGRAY
     private var originIcon: Bitmap? = null
@@ -957,6 +958,16 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
     // ---------------- Launch and close ----------------
 
+    private fun isInHome(v: View): Boolean {
+        var p: View? = v.parent as? View
+        while (p != null) {
+            if (p === home.dock) return true
+            if (home.pageGrids.any { it === p }) return true
+            p = p.parent as? View
+        }
+        return false
+    }
+
     private fun launch(view: View, item: AppItem) {
         try {
             if (item.key.startsWith(FOLDER_PREFIX)) {
@@ -980,6 +991,7 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
 
             if (customAnim) {
                 val col = avgColor(item.icon)
+                originFromHome = isInHome(view)
                 originRect = RectF(l, t, l + view.width, t + view.height)
                 originColor = col
                 originIcon = item.icon
@@ -998,11 +1010,6 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
     private fun startApp(item: AppItem) {
         try {
             drawerView.setSearch(false, imm())
-            // Drawer turant band, taaki app wapas aane par home screen dikhe
-            if (drawerView.progress > 0f) {
-                drawerView.cancelAnim()
-                drawerView.setProgress(0f)
-            }
             val opts = ActivityOptions.makeCustomAnimation(this, 0, 0)
             startActivity(item.intent, opts.toBundle())
             folderView.closeInstant()
@@ -1039,14 +1046,19 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
                 stage.scaleY = 1f
                 overlay.visibility = View.GONE
                 originRect = null
+                originFromHome = false
                 return
             }
             closeAnimator?.cancel()
-            val o = originRect
-            if (o != null) {
-                overlay.prepare(o.left, o.top, o.right, o.bottom, originColor, originIcon ?: return)
+            val icon = originIcon ?: run {
+                stage.alpha = 1f
+                return
+            }
+            val rect = if (originFromHome) originRect else null
+            if (rect != null) {
+                overlay.prepare(rect.left, rect.top, rect.right, rect.bottom, originColor, icon)
             } else {
-                overlay.prepareNotch(originColor, originIcon)
+                overlay.prepareNotch(originColor, icon)
             }
             overlay.visibility = View.VISIBLE
             overlay.t = 1f
@@ -1064,9 +1076,13 @@ class MainActivity : ComponentActivity(), HomeCallbacks, GestureRoot.Host {
             }
             a.addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
+                    overlay.t = 0f
                     overlay.visibility = View.GONE
                     stage.alpha = 1f
+                    stage.scaleX = 1f
+                    stage.scaleY = 1f
                     originRect = null
+                    originFromHome = false
                 }
             })
             closeAnimator = a
